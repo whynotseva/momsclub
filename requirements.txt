@@ -1,0 +1,13 @@
+aiogram
+python-dotenv
+aiohttp
+sqlalchemy
+aiosqlite
+pillow
+requests
+pandas
+openpyxl
+fastapi
+uvicorn
+starlette
+yookassa

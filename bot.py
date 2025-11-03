@@ -71,6 +71,13 @@ reminder_logger.setLevel(logging.INFO)
 # reminder_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 # reminder_logger.addHandler(reminder_file_handler)
 
+# Логгер для системы лояльности
+loyalty_logger = logging.getLogger('loyalty')
+loyalty_logger.setLevel(logging.DEBUG)
+loyalty_file_handler = logging.FileHandler('loyalty_logs.log', encoding='utf-8')
+loyalty_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+loyalty_logger.addHandler(loyalty_file_handler)
+
 # Консольный хендлер для всех логов
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
@@ -201,6 +208,274 @@ async def run_webhook_server():
         await server.shutdown()
     except Exception as e:
         logging.error(f"Ошибка сервера вебхуков: {e}", exc_info=True)
+
+
+async def loyalty_nightly_job():
+    """
+    Утренний крон для системы лояльности: проверяет и повышает уровни,
+    отправляет пуши с выбором бонусов.
+    Запускается каждый день в 08:00 МСК.
+    """
+    loyalty_logger = logging.getLogger('loyalty')
+    
+    while True:
+        try:
+            # Ждём до ближайшего 08:00 МСК
+            now = datetime.now()
+            target_time = now.replace(hour=8, minute=0, second=0, microsecond=0)
+            
+            # Если уже прошло 08:00 сегодня, планируем на завтра
+            if now >= target_time:
+                target_time += timedelta(days=1)
+            
+            time_to_sleep = (target_time - now).total_seconds()
+            loyalty_logger.info(f"⏰ Следующая проверка лояльности в {target_time.strftime('%Y-%m-%d %H:%M:%S')} МСК (через {time_to_sleep/3600:.1f} часов)")
+            
+            await asyncio.sleep(time_to_sleep)
+            
+            # ========== НАЧАЛО ПРОВЕРКИ ==========
+            now = datetime.now()
+            loyalty_logger.info("=" * 80)
+            loyalty_logger.info("🚀 ЗАПУСК ПРОВЕРКИ СИСТЕМЫ ЛОЯЛЬНОСТИ")
+            loyalty_logger.info(f"📅 Дата и время: {now.strftime('%Y-%m-%d %H:%M:%S')} МСК")
+            loyalty_logger.info(f"📆 День недели: {now.strftime('%A')} ({now.weekday()})")
+            loyalty_logger.info("=" * 80)
+            
+            # Проверяем, понедельник ли (weekday() = 0) для отправки напоминаний
+            is_monday = now.weekday() == 0
+            
+            from loyalty.service import send_choose_benefit_push, send_loyalty_reminders
+            from loyalty.levels import upgrade_level_if_needed
+            from database.models import User
+            from sqlalchemy import select
+            
+            async with AsyncSessionLocal() as session:
+                from database.crud import get_active_subscription
+                from loyalty.levels import calc_tenure_days
+                
+                # Получаем всех пользователей с датой первой оплаты (для подсчёта стажа)
+                query = select(User).where(
+                    User.first_payment_date.isnot(None)
+                )
+                
+                result = await session.execute(query)
+                users = result.scalars().all()
+                
+                loyalty_logger.info(f"👥 Найдено пользователей с first_payment_date: {len(users)}")
+                
+                # Статистика по уровням
+                stats = {
+                    'total': len(users),
+                    'with_active_sub': 0,
+                    'without_active_sub': 0,
+                    'upgraded': 0,
+                    'pending_notified': 0,
+                    'pending_skipped_no_sub': 0,
+                    'by_level': {'none': 0, 'silver': 0, 'gold': 0, 'platinum': 0},
+                    'errors': 0
+                }
+                
+                upgraded_count = 0
+                pending_notified_count = 0
+                
+                for idx, user in enumerate(users, 1):
+                    try:
+                        # Получаем стаж и текущий уровень для логирования
+                        tenure_days = calc_tenure_days(user)
+                        current_level = user.current_loyalty_level or 'none'
+                        
+                        # Проверяем активную подписку
+                        active_sub = await get_active_subscription(session, user.id)
+                        has_active_sub = active_sub is not None
+                        
+                        if has_active_sub:
+                            stats['with_active_sub'] += 1
+                        else:
+                            stats['without_active_sub'] += 1
+                        
+                        # Подсчитываем статистику по уровням
+                        if current_level in stats['by_level']:
+                            stats['by_level'][current_level] += 1
+                        
+                        loyalty_logger.debug(
+                            f"[{idx}/{len(users)}] user_id={user.id} (telegram_id={user.telegram_id}): "
+                            f"стаж={tenure_days} дней, уровень={current_level}, "
+                            f"активная подписка={'✅' if has_active_sub else '❌'}, "
+                            f"pending_reward={'✅' if user.pending_loyalty_reward else '❌'}"
+                        )
+                        
+                        # Проверяем и повышаем уровень, если нужно
+                        old_level = user.current_loyalty_level or 'none'
+                        new_level = await upgrade_level_if_needed(session, user)
+                        
+                        if new_level:
+                            upgraded_count += 1
+                            stats['upgraded'] += 1
+                            loyalty_logger.info(
+                                f"⬆️  ПОВЫШЕНИЕ УРОВНЯ: user_id={user.id} (telegram_id={user.telegram_id}): "
+                                f"{old_level} → {new_level} (стаж: {tenure_days} дней)"
+                            )
+                            
+                            # Проверяем наличие активной подписки перед отправкой push
+                            active_sub = await get_active_subscription(session, user.id)
+                            
+                            if active_sub:
+                                # Отправляем сообщение с выбором бонуса только если есть активная подписка
+                                await session.refresh(user)  # Обновляем объект пользователя
+                                
+                                loyalty_logger.info(
+                                    f"📤 Отправка push для нового уровня: user_id={user.id}, level={new_level}"
+                                )
+                                
+                                success = await send_choose_benefit_push(
+                                    bot,
+                                    session,
+                                    user,
+                                    new_level
+                                )
+                                
+                                if success:
+                                    loyalty_logger.info(
+                                        f"✅ Push отправлен успешно: user_id={user.id}, level={new_level}"
+                                    )
+                                else:
+                                    loyalty_logger.error(
+                                        f"❌ Не удалось отправить push: user_id={user.id}, level={new_level}"
+                                    )
+                            else:
+                                loyalty_logger.info(
+                                    f"⏭️  Пропуск push (нет активной подписки): user_id={user.id}, "
+                                    f"достигнут уровень {new_level}"
+                                )
+                        
+                        # Также проверяем пользователей с pending_loyalty_reward = True
+                        # (например, после миграции) - только для АКТУАЛЬНОГО уровня
+                        await session.refresh(user)
+                        if (user.pending_loyalty_reward and 
+                            user.current_loyalty_level and 
+                            user.current_loyalty_level != 'none'):
+                            
+                            # Проверяем, не выбирал ли уже пользователь бонус для ТЕКУЩЕГО уровня
+                            from sqlalchemy import select
+                            from database.models import LoyaltyEvent
+                            
+                            benefit_check_query = select(LoyaltyEvent.id).where(
+                                LoyaltyEvent.user_id == user.id,
+                                LoyaltyEvent.kind == 'benefit_chosen',
+                                LoyaltyEvent.level == user.current_loyalty_level
+                            )
+                            benefit_check_result = await session.execute(benefit_check_query)
+                            
+                            if not benefit_check_result.scalar_one_or_none():
+                                # Пользователь еще не выбирал бонус для текущего уровня
+                                # Проверяем наличие активной подписки перед отправкой push
+                                active_sub = await get_active_subscription(session, user.id)
+                                
+                                if active_sub:
+                                    loyalty_logger.info(
+                                        f"📤 Отправка push для pending reward: user_id={user.id}, "
+                                        f"уровень={user.current_loyalty_level}"
+                                    )
+                                    
+                                    # Отправляем сообщение с выбором бонуса только для актуального уровня и только при активной подписке
+                                    success = await send_choose_benefit_push(
+                                        bot,
+                                        session,
+                                        user,
+                                        user.current_loyalty_level
+                                    )
+                                    
+                                    if success:
+                                        pending_notified_count += 1
+                                        stats['pending_notified'] += 1
+                                        loyalty_logger.info(
+                                            f"✅ Push отправлен (pending reward): user_id={user.id}, "
+                                            f"уровень={user.current_loyalty_level}"
+                                        )
+                                        # НЕ сбрасываем pending_loyalty_reward здесь - он сбросится только после выбора бонуса пользователем
+                                    else:
+                                        loyalty_logger.error(
+                                            f"❌ Не удалось отправить push (pending reward): user_id={user.id}"
+                                        )
+                                else:
+                                    stats['pending_skipped_no_sub'] += 1
+                                    loyalty_logger.info(
+                                        f"⏭️  Пропуск push (pending reward, нет активной подписки): "
+                                        f"user_id={user.id}, уровень={user.current_loyalty_level}"
+                                    )
+                            else:
+                                loyalty_logger.debug(
+                                    f"ℹ️  Бонус уже выбран для уровня {user.current_loyalty_level}: user_id={user.id}"
+                                )
+                        
+                        # Коммитим изменения по одному пользователю для уменьшения блокировок
+                        await session.commit()
+                        
+                    except Exception as e:
+                        stats['errors'] += 1
+                        loyalty_logger.error(
+                            f"❌ ОШИБКА при обработке user_id={user.id}: {e}",
+                            exc_info=True
+                        )
+                        await session.rollback()
+                        # Небольшая задержка перед следующей итерацией
+                        await asyncio.sleep(0.1)
+                
+                # ========== ФИНАЛЬНАЯ СТАТИСТИКА ==========
+                loyalty_logger.info("=" * 80)
+                loyalty_logger.info("📊 ИТОГОВАЯ СТАТИСТИКА ПРОВЕРКИ ЛОЯЛЬНОСТИ")
+                loyalty_logger.info("=" * 80)
+                loyalty_logger.info(f"👥 Всего пользователей проверено: {stats['total']}")
+                loyalty_logger.info(f"✅ С активной подпиской: {stats['with_active_sub']}")
+                loyalty_logger.info(f"❌ Без активной подписки: {stats['without_active_sub']}")
+                loyalty_logger.info("")
+                loyalty_logger.info("📈 Распределение по уровням:")
+                loyalty_logger.info(f"   • None: {stats['by_level']['none']}")
+                loyalty_logger.info(f"   • Silver: {stats['by_level']['silver']}")
+                loyalty_logger.info(f"   • Gold: {stats['by_level']['gold']}")
+                loyalty_logger.info(f"   • Platinum: {stats['by_level']['platinum']}")
+                loyalty_logger.info("")
+                loyalty_logger.info(f"⬆️  Повышено уровней: {stats['upgraded']}")
+                loyalty_logger.info(f"📤 Отправлено push-уведомлений (pending rewards): {stats['pending_notified']}")
+                loyalty_logger.info(f"⏭️  Пропущено push (нет активной подписки): {stats['pending_skipped_no_sub']}")
+                loyalty_logger.info(f"❌ Ошибок при обработке: {stats['errors']}")
+                loyalty_logger.info("=" * 80)
+                loyalty_logger.info("✅ ПРОВЕРКА ЗАВЕРШЕНА")
+                loyalty_logger.info("=" * 80)
+                loyalty_logger.info("")
+                
+                # ========== ЕЖЕНЕДЕЛЬНЫЕ НАПОМИНАНИЯ (каждый понедельник) ==========
+                if is_monday:
+                    loyalty_logger.info("=" * 80)
+                    loyalty_logger.info("🔔 ЗАПУСК ОТПРАВКИ НАПОМИНАНИЙ О БОНУСАХ ЛОЯЛЬНОСТИ")
+                    loyalty_logger.info("=" * 80)
+                    
+                    reminder_stats = await send_loyalty_reminders(bot, session)
+                    
+                    loyalty_logger.info("=" * 80)
+                    loyalty_logger.info("📊 СТАТИСТИКА НАПОМИНАНИЙ")
+                    loyalty_logger.info("=" * 80)
+                    loyalty_logger.info(f"👥 Всего проверено: {reminder_stats['total_checked']}")
+                    loyalty_logger.info(f"✅ С pending_loyalty_reward: {reminder_stats['with_pending']}")
+                    loyalty_logger.info(f"✅ С активной подпиской: {reminder_stats['with_active_sub']}")
+                    loyalty_logger.info(f"📤 Отправлено напоминаний: {reminder_stats['reminders_sent']}")
+                    loyalty_logger.info(f"⏭️  Пропущено (нет подписки): {reminder_stats['skipped_no_sub']}")
+                    loyalty_logger.info(f"ℹ️  Уже выбрали бонус: {reminder_stats['already_chosen']}")
+                    loyalty_logger.info(f"❌ Ошибок: {reminder_stats['errors']}")
+                    loyalty_logger.info("=" * 80)
+                    loyalty_logger.info("✅ НАПОМИНАНИЯ ЗАВЕРШЕНЫ")
+                    loyalty_logger.info("=" * 80)
+                    loyalty_logger.info("")
+                else:
+                    loyalty_logger.info(f"ℹ️  Сегодня не понедельник - напоминания не отправляются (день недели: {now.strftime('%A')})")
+            
+            # После выполнения ждём до следующего 08:00 МСК
+            await asyncio.sleep(3600)  # Проверяем каждый час, чтобы не пропустить время
+            
+        except Exception as e:
+            loyalty_logger.error(f"Ошибка в кроне лояльности: {e}", exc_info=True)
+            # Спим 10 минут перед повторной попыткой
+            await asyncio.sleep(600)
 
 
 async def send_payment_reminders():
@@ -349,12 +624,11 @@ async def send_payment_reminders():
 
 async def send_migration_notifications():
     """
-    ОТКЛЮЧЕНО: Функция использовалась для миграции с ЮКассы на Prodamus.
-    Теперь система работает на ЮКассе, уведомления не требуются.
+    Отправляет уведомления о возврате на ЮКасy всем пользователям.
+    Начисляет 3 бонусных дня за неудобство.
     """
-    return  # Функция отключена
     migration_logger = logging.getLogger('migration_notifications')
-    migration_logger.info("Запуск задачи отправки миграционных уведомлений")
+    migration_logger.info("Запуск задачи отправки миграционных уведомлений (возврат на ЮКасy)")
     
     while True:
         try:
@@ -380,6 +654,26 @@ async def send_migration_notifications():
                             migration_logger.info(f"Уведомление пользователю {user.telegram_id} уже отправлялось, пропускаем")
                             continue
                         
+                        # Получаем активную подписку пользователя для даты окончания
+                        from database.crud import get_active_subscription
+                        from datetime import datetime, timedelta
+                        
+                        active_sub = await get_active_subscription(session, user.id)
+                        
+                        # НАЧИСЛЯЕМ 3 БОНУСНЫХ ДНЯ ЗА НЕУДОБСТВО
+                        if active_sub and active_sub.end_date:
+                            # Добавляем 3 дня
+                            active_sub.end_date = active_sub.end_date + timedelta(days=3)
+                            active_sub.updated_at = datetime.now()
+                            session.add(active_sub)
+                            await session.commit()
+                            end_date_formatted = active_sub.end_date.strftime('%d.%m.%Y')
+                            migration_logger.info(f"Добавлено 3 бонусных дня пользователю {user.telegram_id}. Новая дата: {end_date_formatted}")
+                        else:
+                            # Если нет активной подписки, используем текущую дату + 7 дней
+                            end_date_formatted = (datetime.now() + timedelta(days=7)).strftime('%d.%m.%Y')
+                            migration_logger.info(f"Пользователь {user.telegram_id} не имеет активной подписки")
+                        
                         # Создаем инлайн-клавиатуру с кнопкой продления
                         keyboard = types.InlineKeyboardMarkup(
                             inline_keyboard=[
@@ -393,17 +687,6 @@ async def send_migration_notifications():
                                 )]
                             ]
                         )
-                        
-                        # Получаем активную подписку пользователя для даты окончания
-                        from database.crud import get_active_subscription
-                        active_sub = await get_active_subscription(session, user.id)
-                        
-                        if active_sub and active_sub.end_date:
-                            end_date_formatted = active_sub.end_date.strftime('%d.%m.%Y')
-                        else:
-                            # Если нет активной подписки, используем текущую дату + 7 дней
-                            from datetime import datetime, timedelta
-                            end_date_formatted = (datetime.now() + timedelta(days=7)).strftime('%d.%m.%Y')
                         
                         # Форматируем текст уведомления с датой окончания подписки
                         formatted_text = MIGRATION_NOTIFICATION_TEXT.format(end_date=end_date_formatted)
@@ -570,8 +853,11 @@ async def main():
     # Запускаем задачу для отправки напоминаний
     asyncio.create_task(send_payment_reminders())
     
-    # Миграционные уведомления отключены (возврат на ЮКассу)
-    # asyncio.create_task(send_migration_notifications())
+    # Запускаем ночной крон для системы лояльности
+    asyncio.create_task(loyalty_nightly_job())
+    
+    # Миграционные уведомления включены (возврат на ЮКасy с бонусом 3 дня)
+    asyncio.create_task(send_migration_notifications())
     
     # Запускаем задачу для отправки запланированных сообщений
     asyncio.create_task(send_scheduled_messages())

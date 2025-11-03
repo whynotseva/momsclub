@@ -27,6 +27,15 @@ class User(Base):
     reminder_sent = Column(Boolean, default=False)  # Флаг, что напоминание об оплате было отправлено
     is_blocked = Column(Boolean, default=False)  # Флаг, что пользователь заблокировал бота
     is_first_payment_done = Column(Boolean, default=False)  # Флаг первой оплаты (для специальной цены)
+    
+    # Поля лояльности
+    first_payment_date = Column(DateTime, nullable=True)  # Дата первой оплаты для подсчёта стажа
+    current_loyalty_level = Column(String(20), default='none')  # 'none', 'silver', 'gold', 'platinum'
+    one_time_discount_percent = Column(Integer, default=0)  # Разовая скидка 5% или 10%
+    lifetime_discount_percent = Column(Integer, default=0)  # Пожизненная скидка 15%
+    pending_loyalty_reward = Column(Boolean, default=False)  # Флаг ожидания выбора бонуса
+    gift_due = Column(Boolean, default=False)  # Флаг подарка для Platinum
+    
     # Отношение к подпискам
     subscriptions = relationship("Subscription", back_populates="user")
     
@@ -55,6 +64,10 @@ class Subscription(Base):
     renewal_price = Column(Integer, nullable=True)  # Цена для следующего автосписания (в копейках)
     renewal_duration_days = Column(Integer, nullable=True)  # Длительность следующего автопродления (в днях)
     subscription_id = Column(String(255), nullable=True)  # ID подписки в системе Prodamus
+    
+    # Поля лояльности (для аудита)
+    loyalty_applied_level = Column(String(20), nullable=True)  # Уровень лояльности, применённый к этой подписке
+    loyalty_discount_percent = Column(Integer, default=0)  # Процент скидки лояльности, применённый к этой подписке
     
     # Отношение к пользователю
     user = relationship("User", back_populates="subscriptions")
@@ -244,3 +257,21 @@ class AutorenewalCancellationRequest(Base):
     
     def __repr__(self):
         return f"<AutorenewalCancellationRequest {self.id} for user {self.user_id} status={self.status}>"
+
+
+class LoyaltyEvent(Base):
+    """Модель событий лояльности"""
+    __tablename__ = "loyalty_events"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    kind = Column(String(50), nullable=False)  # 'level_up', 'benefit_chosen', 'bonus_applied', 'reversed'
+    level = Column(String(20), nullable=True)  # 'silver', 'gold', 'platinum'
+    payload = Column(Text, nullable=True)  # JSON с дополнительными данными
+    created_at = Column(DateTime, server_default=func.now())
+    
+    # Отношение к пользователю
+    user = relationship("User")
+    
+    def __repr__(self):
+        return f"<LoyaltyEvent {self.id} for user {self.user_id} kind={self.kind}>"

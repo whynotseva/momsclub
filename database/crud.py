@@ -327,19 +327,56 @@ async def extend_subscription(db: AsyncSession,
 async def create_payment_log(db: AsyncSession, user_id: int, amount: int, status: str, 
                             subscription_id: int = None, payment_method: str = None, 
                             transaction_id: str = None, details: str = None, 
-                            payment_label: str = None, days: Optional[int] = None):
-    """Создает запись о платеже в логе с дополнительной меткой платежа и количеством дней."""
-    payment_log = PaymentLog(
-        user_id=user_id,
-        subscription_id=subscription_id,
-        amount=amount,
-        status=status,
-        payment_method=payment_method,
-        transaction_id=transaction_id,
-        details=details,
-        payment_label=payment_label,
-        days=days
-    )
+                            payment_label: str = None, days: Optional[int] = None,
+                            payment_datetime: Optional[datetime] = None):
+    """
+    Создает запись о платеже в логе с дополнительной меткой платежа и количеством дней.
+    
+    Args:
+        payment_datetime: Реальное время платежа от платежной системы (если доступно).
+                         Если не указано, используется текущее время.
+    """
+    from datetime import datetime
+    
+    # Используем реальное время платежа, если передано
+    if payment_datetime:
+        # Если время с timezone, конвертируем в naive datetime (SQLite не поддерживает timezone)
+        if payment_datetime.tzinfo is not None:
+            # Конвертируем UTC в локальное время (MSK = UTC+3)
+            try:
+                import pytz
+                msk_tz = pytz.timezone('Europe/Moscow')
+                payment_datetime = payment_datetime.astimezone(msk_tz).replace(tzinfo=None)
+            except ImportError:
+                # Если pytz не установлен, просто убираем timezone
+                payment_datetime = payment_datetime.replace(tzinfo=None)
+        
+        # Создаем объект с явно указанным created_at
+        payment_log = PaymentLog(
+            user_id=user_id,
+            subscription_id=subscription_id,
+            amount=amount,
+            status=status,
+            payment_method=payment_method,
+            transaction_id=transaction_id,
+            details=details,
+            payment_label=payment_label,
+            days=days,
+            created_at=payment_datetime
+        )
+    else:
+        # Используем текущее время (по умолчанию)
+        payment_log = PaymentLog(
+            user_id=user_id,
+            subscription_id=subscription_id,
+            amount=amount,
+            status=status,
+            payment_method=payment_method,
+            transaction_id=transaction_id,
+            details=details,
+            payment_label=payment_label,
+            days=days
+        )
     
     db.add(payment_log)
     await db.commit()
@@ -1023,6 +1060,11 @@ async def send_payment_notification_to_admins(bot, user, payment, subscription, 
     try:
         # Для проверки первого платежа используем специальный запрос
         from sqlalchemy import select, exists, and_
+        from utils.constants import (
+            SUBSCRIPTION_PRICE,
+            SUBSCRIPTION_PRICE_2MONTHS,
+            SUBSCRIPTION_PRICE_3MONTHS
+        )
         
         # Проверяем, есть ли другие успешные платежи у этого пользователя
         is_first_payment = True  # Предполагаем по умолчанию, что это первый платеж
@@ -1050,11 +1092,40 @@ async def send_payment_notification_to_admins(bot, user, payment, subscription, 
             payment_subtitle = "👑 <b>Пользователь продлил подписку</b>"
         
         user_info = f"{user.first_name} {user.last_name or ''} (@{user.username})" if user.username else f"{user.first_name} {user.last_name or ''} (ID: {user.telegram_id})"
+        
+        # Определяем базовую цену по количеству дней
+        days = subscription.renewal_duration_days or payment.days or 30
+        if days <= 30:
+            base_price = SUBSCRIPTION_PRICE
+        elif days <= 60:
+            base_price = SUBSCRIPTION_PRICE_2MONTHS
+        elif days <= 90:
+            base_price = SUBSCRIPTION_PRICE_3MONTHS
+        else:
+            # Для нестандартных периодов вычисляем пропорционально месячной цене
+            base_price = int((days / 30) * SUBSCRIPTION_PRICE)
+        
+        # Получаем информацию о скидке
+        discount_percent = subscription.loyalty_discount_percent or 0
+        if discount_percent == 0 and user.lifetime_discount_percent > 0:
+            discount_percent = user.lifetime_discount_percent
+        
+        final_price = payment.amount
+        
+        # Формируем строку с информацией о цене и скидке
+        if discount_percent > 0 and final_price < base_price:
+            price_info = (
+                f"💵 Цена: <s>{base_price} руб.</s> {final_price} руб.\n"
+                f"💰 Скидка: {discount_percent}% (постоянная скидка лояльности)"
+            )
+        else:
+            price_info = f"💵 Сумма: {final_price} руб."
+        
         admin_notification = (
             f"{payment_title}\n\n"
             f"{payment_subtitle}\n"
             f"👤 Пользователь: {user_info}\n"
-            f"💵 Сумма: {payment.amount} руб.\n"
+            f"{price_info}\n"
             f"📆 Срок действия: до {subscription.end_date.strftime('%d.%m.%Y')}\n"
             f"🆔 ID транзакции: <code>{transaction_id}</code>\n\n"
             f"✅ Подписка успешно активирована!"
@@ -1104,6 +1175,66 @@ async def send_promocode_notification_to_admins(bot, user, promo_code, subscript
             
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений о промокоде администраторам: {e}")
+
+
+async def send_loyalty_benefit_notification_to_admins(bot, user, level: str, code: str, benefit_details: dict = None):
+    """Отправляет уведомление администраторам о выборе бонуса лояльности"""
+    logger = logging.getLogger(__name__)
+    try:
+        user_info = f"{user.first_name} {user.last_name or ''} (@{user.username})" if user.username else f"{user.first_name} {user.last_name or ''} (ID: {user.telegram_id})"
+        
+        # Названия уровней
+        level_names = {
+            'silver': 'Silver Mom ⭐',
+            'gold': 'Gold Mom 🌟',
+            'platinum': 'Platinum Mom 💍'
+        }
+        level_name = level_names.get(level, level)
+        
+        # Описание бонусов
+        benefit_descriptions = {
+            'days_7': '🎁 +7 дней доступа к клубу',
+            'days_14': '🎁 +14 дней доступа к клубу',
+            'days_30_gift': '🎁 +30 дней доступа + подарок',
+            'discount_5': '💰 Постоянная скидка 5%',
+            'discount_10': '💰 Постоянная скидка 10%',
+            'discount_15_forever': '💎 Постоянная скидка 15%'
+        }
+        
+        benefit_description = benefit_descriptions.get(code, f'Бонус: {code}')
+        
+        # Дополнительная информация
+        details_text = ""
+        if benefit_details:
+            if 'days' in benefit_details:
+                details_text = f"\n📅 Добавлено дней: {benefit_details['days']}"
+            if 'discount_percent' in benefit_details:
+                details_text = f"\n💰 Размер скидки: {benefit_details['discount_percent']}%"
+        
+        admin_notification = (
+            f"🎁 <b>Выбор бонуса лояльности!</b>\n\n"
+            f"👤 Пользователь: {user_info}\n"
+            f"⭐ Уровень: {level_name}\n"
+            f"🎁 Выбранный бонус: {benefit_description}{details_text}\n\n"
+            f"✅ Бонус успешно применён!"
+        )
+        
+        # Отправляем сообщение всем администраторам
+        if ADMIN_IDS:
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        admin_notification,
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке уведомления о бонусе лояльности админу {admin_id}: {e}")
+        else:
+            logger.warning("Список ADMIN_IDS пуст, уведомление о бонусе лояльности не отправлено.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомлений о бонусе лояльности администраторам: {e}")
 
 async def add_user_to_club_channel(bot, user_id: int) -> None:
     """Добавляет пользователя в закрытый канал/группу"""
@@ -1407,7 +1538,7 @@ async def disable_user_auto_renewal(db: AsyncSession, user_id: int) -> bool:
     active_sub = await get_active_subscription(db, user_id)
     if active_sub:
         logger.info(f"Найдена активная подписка ID {active_sub.id} для пользователя {user_id}")
-        
+
         subscription_reset_query = (
             update(Subscription)
             .where(Subscription.id == active_sub.id)
@@ -1452,7 +1583,7 @@ async def enable_user_auto_renewal(db: AsyncSession, user_id: int) -> bool:
         .values(is_recurring_active=True)
     )
     await db.execute(user_update_query)
-    
+
     logger.info(f"Автопродление включено для пользователя ID {user_id}. is_recurring_active=True.")
     await db.commit()
     return True
@@ -1754,7 +1885,7 @@ async def get_users_for_migration_notification(db: AsyncSession, notification_wi
     """
     Возвращает пользователей, которым нужно отправить уведомление о смене платежной системы.
     ВАЖНО: В режиме "возврат на ЮКасy" отправляем ВСЕМ пользователям с активной подпиской!
-    
+
     Returns:
         List[User]: Список пользователей для уведомления
     """

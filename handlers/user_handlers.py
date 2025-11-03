@@ -20,6 +20,7 @@ from database.crud import (
     create_payment_log,
     get_user_by_referral_code,
     update_user_referrer,
+    send_loyalty_benefit_notification_to_admins,
     get_payment_by_label,
     is_payment_processed,
     mark_payment_as_processed,
@@ -47,6 +48,8 @@ from database.crud import (
 from sqlalchemy import update
 from database.models import User
 from utils.payment import create_payment_link, check_payment_status
+from loyalty.service import effective_discount, price_with_discount, apply_benefit_from_callback
+from loyalty import calc_tenure_days, level_for_days
 from utils.constants import (
     CLUB_CHANNEL_URL, 
     SUBSCRIPTION_PRICE_FIRST,
@@ -113,7 +116,7 @@ main_keyboard = ReplyKeyboardMarkup(
 )
 
 # Обработчик команды /start
-@user_router.message(Command("start"))
+@user_router.message(Command("start"), F.chat.type == "private")
 async def cmd_start(message: types.Message, state: FSMContext):
     """
     Обработчик команды /start
@@ -217,31 +220,27 @@ async def cmd_start(message: types.Message, state: FSMContext):
             ]
         )
         
-        # Отправляем приветственное изображение
+        # Отправляем приветственное изображение без подписи (текст отправим отдельно)
         if os.path.exists(WELCOME_IMAGE_PATH):
             photo = FSInputFile(WELCOME_IMAGE_PATH)
             await message.answer_photo(
-                photo=photo,
-                caption=WELCOME_TEXT,
-                reply_markup=keyboard,
-                parse_mode="HTML"
+                photo=photo
             )
         else:
-            # Если изображение не найдено, отправляем только текст и логируем ошибку
-            logger.error(f"Приветственное изображение не найдено по пути: {WELCOME_IMAGE_PATH}. Создаем директорию media и пустой файл.")
-            
+            # Если изображение не найдено, логируем ошибку
+            logger.error(f"Приветственное изображение не найдено по пути: {WELCOME_IMAGE_PATH}.")
             # Создаем директорию, если она отсутствует
             os.makedirs(os.path.dirname(WELCOME_IMAGE_PATH), exist_ok=True)
-            
-            # Создаем пустой файл, чтобы предотвратить повторение ошибки
-            with open(WELCOME_IMAGE_PATH, 'w') as f:
-                f.write("# Это временный файл-заглушка. Пожалуйста, замените его на реальное приветственное изображение")
-            
-            await message.answer(
-                WELCOME_TEXT,
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
+        
+        # Ждем немного перед отправкой текста
+        await asyncio.sleep(0.3)
+        
+        # Отправляем приветственный текст отдельным сообщением с кнопкой
+        await message.answer(
+            WELCOME_TEXT,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
         
         # Ждем 0.5 секунды перед отправкой второго сообщения
         await asyncio.sleep(0.5)
@@ -600,14 +599,24 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
         from database.crud import create_payment_log
         
         async with AsyncSessionLocal() as session:
+            # Применяем скидку лояльности
+            discount_percent = effective_discount(user)
+            final_price = price_with_discount(price, discount_percent)
+            
+            # Формируем описание с информацией о скидке
+            description = f"Подписка на Mom's Club на {days} дней (username: @{user.username or 'Unknown'})"
+            if discount_percent > 0:
+                description += f" | Скидка лояльности: {discount_percent}%"
+            
             payment_url, payment_id, payment_label = create_payment_link(
-                amount=price,
+                amount=final_price,
                 user_id=user.telegram_id,
-                description=f"Подписка на Mom's Club на {days} дней (username: @{user.username or 'Unknown'})",
+                description=description,
                 sub_type=sub_type,
                 days=days,
                 phone=user.phone,
-                email=user.email
+                email=user.email,
+                discount_percent=discount_percent
             )
             
             if payment_url and payment_id and payment_label:
@@ -616,16 +625,22 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                     payment_label=payment_label
                 )
                 
+                # Формируем детали платежа с информацией о скидке
+                details_text = f"Подписка на Mom's Club на {days} дней (username: @{user.username or 'Unknown'})"
+                if discount_percent > 0:
+                    details_text += f" | Скидка лояльности: {discount_percent}% (было {price}₽, стало {final_price}₽)"
+                
                 # Создаем запись о платеже (статус "pending")
+                # Сохраняем исходную цену в amount, чтобы знать базовую цену
                 payment_log_entry = await create_payment_log(
                     session,
                     user_id=user.id,
                     subscription_id=None,
-                    amount=price,
+                    amount=final_price,  # Сохраняем финальную цену со скидкой
                     status="pending",
                     payment_method="yookassa",
                     transaction_id=payment_id, # Сохраняем UUID платежа
-                    details=f"Подписка на Mom's Club на {days} дней (username: @{user.username or 'Unknown'})",
+                    details=details_text,
                     payment_label=payment_label,
                     days=days # Сохраняем количество дней
                 )
@@ -633,10 +648,18 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                 # Используем ID записи лога платежа для callback_data
                 payment_db_id = payment_log_entry.id
                 
+                # Формируем текст для кнопки и сообщения с учетом скидки
+                price_text = f"{final_price} ₽"
+                if discount_percent > 0:
+                    price_text = f"<s>{price} ₽</s> {final_price} ₽"
+                    discount_info = f"\n💰 <b>Ваша скидка лояльности: {discount_percent}%</b>\n"
+                else:
+                    discount_info = ""
+                
                 # Новая клавиатура БЕЗ кнопки "Я оплатила"
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [InlineKeyboardButton(text=f"💳 Перейти к оплате ({price} ₽)", url=payment_url)],
+                        [InlineKeyboardButton(text=f"💳 Перейти к оплате ({final_price} ₽)", url=payment_url)],
                         [InlineKeyboardButton(text="« Назад", callback_data="subscribe")]
                     ]
                 )
@@ -648,7 +671,7 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                     # Отправляем новое сообщение с информацией о платеже
                     await callback.message.answer(
                         f"🔐 <b>Оформление подписки на {days} дней</b>\n\n"
-                        f"Сумма к оплате: <b>{price} ₽</b>\n\n"
+                        f"Сумма к оплате: <b>{price_text}</b>{discount_info}\n"
                         "Для оплаты нажмите на кнопку «Перейти к оплате» ниже.\n"
                         "После успешной оплаты подписка активируется в течении 2-5 минут.\n"
                         "Вы получите уведомление, когда платеж будет обработан.",
@@ -1130,7 +1153,7 @@ async def process_check_payment(callback: types.CallbackQuery, state: FSMContext
 
 
 # Обработчик команды /help
-@user_router.message(Command("help"))
+@user_router.message(Command("help"), F.chat.type == "private")
 async def cmd_help(message: types.Message):
     """
     Обработчик команды /help
@@ -1145,7 +1168,7 @@ async def cmd_help(message: types.Message):
 
 
 # Обработчик команды /club
-@user_router.message(Command("club"))
+@user_router.message(Command("club"), F.chat.type == "private")
 async def cmd_club(message: types.Message):
     """
     Обработчик команды /club
@@ -1548,6 +1571,115 @@ async def process_confirm_extension(callback: types.CallbackQuery, state: FSMCon
     await callback.answer()
 
 
+# Вспомогательная функция для форматирования краткой информации о лояльности (для главного экрана)
+def format_loyalty_status_short(user) -> str:
+    """
+    Формирует краткую информацию о статусе лояльности для главного экрана.
+    Возвращает пустую строку, если нет информации о лояльности.
+    Форматирование уже готово для MarkdownV2.
+    """
+    tenure_days = calc_tenure_days(user)
+    level = user.current_loyalty_level or 'none'
+    discount = effective_discount(user)
+    
+    # Если есть уровень
+    if level != 'none':
+        level_names = {
+            'silver': ('Silver Mom', '⭐'),
+            'gold': ('Gold Mom', '🌟'),
+            'platinum': ('Platinum Mom', '💍')
+        }
+        level_name, emoji = level_names.get(level, ('', ''))
+        
+        # Если есть скидка, показываем её
+        if discount > 0:
+            discount_escaped = escape_markdown_v2(str(discount))
+            # Все скидки лояльности теперь постоянные
+            return f"💎 *Твой статус:* {level_name} {emoji}\n💎 *Постоянная скидка:* {discount_escaped}% ✨\n"
+        else:
+            return f"💎 *Твой статус:* {level_name} {emoji}\n"
+    
+    # Если нет уровня, но есть скидка
+    elif discount > 0:
+        discount_escaped = escape_markdown_v2(str(discount))
+        # Если есть постоянная скидка, показываем её как постоянную
+        if user.lifetime_discount_percent > 0:
+            return f"💎 *Твоя постоянная скидка:* {discount_escaped}% ✨\n"
+        else:
+            return f"💰 *Твоя скидка:* {discount_escaped}% на следующее продление ✨\n"
+    
+    # Если есть стаж (больше 0 дней), но нет уровня
+    elif tenure_days > 0:
+        tenure_escaped = escape_markdown_v2(str(tenure_days))
+        return f"💫 Ты с нами уже *{tenure_escaped}* дней\\! Скоро откроются бонусы ✨\n"
+    
+    # Если ничего нет
+    return ""
+
+
+# Вспомогательная функция для форматирования подробной информации о лояльности (для управления подпиской)
+def format_loyalty_status_detailed(user) -> str:
+    """
+    Формирует подробную информацию о статусе лояльности для раздела управления подпиской.
+    """
+    tenure_days = calc_tenure_days(user)
+    level = user.current_loyalty_level or 'none'
+    discount = effective_discount(user)
+    
+    loyalty_text = "💎 *Твой статус лояльности:*\n"
+    
+    # Если есть уровень
+    if level != 'none':
+        level_names = {
+            'silver': ('Silver Mom', '⭐'),
+            'gold': ('Gold Mom', '🌟'),
+            'platinum': ('Platinum Mom', '💍')
+        }
+        level_name, emoji = level_names.get(level, ('', ''))
+        
+        tenure_escaped = escape_markdown_v2(str(tenure_days))
+        loyalty_text += f"⭐ Уровень: *{level_name}* {emoji}\n"
+        loyalty_text += f"📅 С нами: *{tenure_escaped} дней*\n"
+        
+        # Если есть ожидающий бонус
+        if user.pending_loyalty_reward:
+            loyalty_text += "🎁 *У тебя есть невыбранный бонус\\!*\n\n"
+            loyalty_text += "Выбери свой подарок в личных сообщениях ✨\n"
+        else:
+            # Информация о скидке
+            if user.lifetime_discount_percent > 0:
+                discount_escaped = escape_markdown_v2(str(discount))
+                loyalty_text += f"💎 Постоянная скидка: *{discount_escaped}%* на все продления ✨\n"
+            elif discount > 0:
+                discount_escaped = escape_markdown_v2(str(discount))
+                loyalty_text += f"💰 Скидка: *{discount_escaped}%* на следующее продление\n"
+            else:
+                loyalty_text += "💰 Скидка: Нет\n"
+            
+            loyalty_text += "🎁 Ожидает бонус: Нет\n"
+    
+    # Если нет уровня, но есть скидка
+    elif discount > 0:
+        discount_escaped = escape_markdown_v2(str(discount))
+        if user.lifetime_discount_percent > 0:
+            loyalty_text += f"💎 Постоянная скидка: *{discount_escaped}%* на все продления ✨\n"
+        else:
+            loyalty_text += f"💰 На следующее продление: *{discount_escaped}%* ✨\n"
+    
+    # Если нет ничего, но есть стаж
+    elif tenure_days > 0:
+        tenure_escaped = escape_markdown_v2(str(tenure_days))
+        loyalty_text += f"💫 Ты с нами уже *{tenure_escaped} дней*\n"
+        loyalty_text += "✨ Скоро откроются бонусы за верность\\!\n"
+    
+    # Если совсем ничего нет
+    else:
+        loyalty_text += "💫 Ты новичок в нашем клубе\n"
+        loyalty_text += "✨ Бонусы появятся со временем\\!\n"
+    
+    return loyalty_text
+
+
 # Обработчик нажатия кнопки "Личный кабинет"
 @user_router.message(lambda message: message.text in ["🎀 Личный кабинет", "Личный кабинет"])
 async def process_profile(message: types.Message):
@@ -1587,8 +1719,22 @@ async def process_profile(message: types.Message):
             # Получаем информацию о подписке
             subscription = await get_active_subscription(session, user.id)
             
-            # URL баннера для личного кабинета
-            banner_path = os.path.join(os.getcwd(), "media", "личныйкабинет.jpg")
+            # Выбираем картинку в зависимости от уровня лояльности
+            tenure_days = calc_tenure_days(user)
+            level = user.current_loyalty_level or level_for_days(tenure_days)
+            
+            # Определяем путь к картинке на основе уровня лояльности
+            if level == 'silver':
+                banner_filename = "silverlk.png"
+            elif level == 'gold':
+                banner_filename = "goldlk.png"
+            elif level == 'platinum':
+                banner_filename = "platinum.png"
+            else:
+                # Для пользователей без уровня лояльности или с level == 'none'
+                banner_filename = "nonelk.png"
+            
+            banner_path = os.path.join(os.getcwd(), "media", banner_filename)
             banner_photo = FSInputFile(banner_path)
             
             if subscription:
@@ -1608,17 +1754,21 @@ async def process_profile(message: types.Message):
                 
                 days_text = escape_markdown_v2(days_text)
                 
+                # Формируем информацию о лояльности
+                loyalty_status = format_loyalty_status_short(user)
+                loyalty_status_escaped = loyalty_status  # Уже готово для MarkdownV2
+                
                 # Новый формат текста
                 profile_text = f"""🎀 *Добро пожаловать в личный кабинет\\!*
 
 👋 Рады видеть вас, {user_name_escaped}
-
-Выберите нужный пункт в меню ниже — всё под рукой"""
+{loyalty_status_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
                 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="🔐 Войти в Mom's Club", url=CLUB_CHANNEL_URL)],
                         [InlineKeyboardButton(text="⚙️ Управление подпиской", callback_data="manage_subscription")],
+                        [InlineKeyboardButton(text="💎 Все про систему лояльности", callback_data="loyalty_info")],
                         [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="referral_program")],
                         [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo_code")],
                         [InlineKeyboardButton(text="📅 Указать дату рождения", callback_data="set_birthday")],
@@ -1646,6 +1796,7 @@ async def process_profile(message: types.Message):
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="💓 Присоединиться к Mom's Club 💓", callback_data="subscribe")],
+                        [InlineKeyboardButton(text="💎 Все про систему лояльности", callback_data="loyalty_info")],
                         [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo_code")],
                         [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")]
                     ]
@@ -1978,8 +2129,22 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
             # Получаем информацию о подписке
             subscription = await get_active_subscription(session, user.id)
             
-            # URL баннера для личного кабинета
-            banner_path = os.path.join(os.getcwd(), "media", "личныйкабинет.jpg")
+            # Выбираем картинку в зависимости от уровня лояльности
+            tenure_days = calc_tenure_days(user)
+            level = user.current_loyalty_level or level_for_days(tenure_days)
+            
+            # Определяем путь к картинке на основе уровня лояльности
+            if level == 'silver':
+                banner_filename = "silverlk.png"
+            elif level == 'gold':
+                banner_filename = "goldlk.png"
+            elif level == 'platinum':
+                banner_filename = "platinum.png"
+            else:
+                # Для пользователей без уровня лояльности или с level == 'none'
+                banner_filename = "nonelk.png"
+            
+            banner_path = os.path.join(os.getcwd(), "media", banner_filename)
             banner_photo = FSInputFile(banner_path)
             
             if subscription:
@@ -1999,17 +2164,21 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
                 
                 days_text = escape_markdown_v2(days_text)
                 
+                # Формируем информацию о лояльности
+                loyalty_status = format_loyalty_status_short(user)
+                loyalty_status_escaped = loyalty_status  # Уже готово для MarkdownV2
+                
                 # Новый формат текста
                 profile_text = f"""🎀 *Добро пожаловать в личный кабинет\\!*
 
 👋 Рады видеть вас, {user_name_escaped}
-
-Выберите нужный пункт в меню ниже — всё под рукой"""
+{loyalty_status_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
                 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="🔐 Войти в Mom's Club", url=CLUB_CHANNEL_URL)],
                         [InlineKeyboardButton(text="⚙️ Управление подпиской", callback_data="manage_subscription")],
+                        [InlineKeyboardButton(text="💎 Все про систему лояльности", callback_data="loyalty_info")],
                         [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="referral_program")],
                         [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo_code")],
                         [InlineKeyboardButton(text="📅 Указать дату рождения", callback_data="set_birthday")],
@@ -2043,6 +2212,7 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="💓 Присоединиться к Mom's Club 💓", callback_data="subscribe")],
+                        [InlineKeyboardButton(text="💎 Все про систему лояльности", callback_data="loyalty_info")],
                         [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo_code")],
                         [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")]
                     ]
@@ -2079,10 +2249,111 @@ async def process_close_message(callback: types.CallbackQuery):
 
 
 # Добавляем команду для доступа к профилю
-@user_router.message(Command("profile"))
+@user_router.message(Command("profile"), F.chat.type == "private")
 async def cmd_profile(message: types.Message):
     # Перенаправляем на обработчик кнопки профиля
     await process_profile(message)
+
+
+# Обработчик кнопки "Все про систему лояльности"
+@user_router.callback_query(F.data == "loyalty_info")
+async def process_loyalty_info(callback: types.CallbackQuery):
+    """Обработчик для отображения информации о системе лояльности"""
+    log_message(callback.from_user.id, "loyalty_info", "callback")
+    
+    from database.crud import get_user_by_telegram_id
+    from datetime import datetime
+    from loyalty.levels import SILVER_THRESHOLD, GOLD_THRESHOLD, PLATINUM_THRESHOLD
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+        
+        # Получаем информацию о текущем статусе пользователя
+        tenure_days = calc_tenure_days(user)
+        current_level = user.current_loyalty_level or level_for_days(tenure_days)
+        discount = effective_discount(user)
+        
+        # Определяем следующие уровни и сколько дней осталось
+        next_level_info = ""
+        if current_level == 'none':
+            days_to_silver = SILVER_THRESHOLD - tenure_days
+            next_level_info = f"\n\n📈 <b>До уровня Silver:</b> {days_to_silver} дней (всего {SILVER_THRESHOLD} дней)"
+        elif current_level == 'silver':
+            days_to_gold = GOLD_THRESHOLD - tenure_days
+            next_level_info = f"\n\n📈 <b>До уровня Gold:</b> {days_to_gold} дней (всего {GOLD_THRESHOLD} дней)"
+        elif current_level == 'gold':
+            days_to_platinum = PLATINUM_THRESHOLD - tenure_days
+            next_level_info = f"\n\n📈 <b>До уровня Platinum:</b> {days_to_platinum} дней (всего {PLATINUM_THRESHOLD} дней)"
+        elif current_level == 'platinum':
+            next_level_info = f"\n\n🏆 <b>Поздравляем!</b> Ты достигла максимального уровня лояльности! 💍"
+        
+        # Формируем текст с текущим статусом
+        current_status = ""
+        if current_level != 'none':
+            level_names = {
+                'silver': ('Silver Mom', '⭐'),
+                'gold': ('Gold Mom', '🌟'),
+                'platinum': ('Platinum Mom', '💍')
+            }
+            level_name, emoji = level_names.get(current_level, ('', ''))
+            current_status = f"\n\n💎 <b>Твой текущий статус:</b> {level_name} {emoji}"
+            if discount > 0:
+                current_status += f"\n💰 <b>Твоя постоянная скидка:</b> {discount}%"
+        elif tenure_days > 0:
+            current_status = f"\n\n📅 <b>Твой стаж:</b> {tenure_days} дней"
+        
+        # Основной текст о системе лояльности
+        loyalty_info_text = f"""💎 <b>Система лояльности Mom's Club</b> ✨
+
+🎁 <b>Что это?</b>
+Система лояльности — это наша благодарность за твою верность и постоянное участие в клубе! Чем дольше ты с нами, тем больше бонусов получаешь 🩷
+
+⭐ <b>Уровни лояльности:</b>
+
+<b>Silver Mom</b> ⭐ — <b>3 месяца</b> вместе
+• Постоянная скидка <b>5%</b> на все продления подписки
+• <b>+7 дней</b> бесплатного доступа к клубу
+
+<b>Gold Mom</b> 🌟 — <b>6 месяцев</b> вместе
+• Постоянная скидка <b>10%</b> на все продления подписки
+• <b>+14 дней</b> бесплатного доступа к клубу
+
+<b>Platinum Mom</b> 💍 — <b>12 месяцев</b> вместе
+• Постоянная скидка <b>15%</b> на все продления подписки
+• <b>+30 дней</b> бесплатного доступа + особенный подарок 🎁
+
+📊 <b>Как повысить уровень?</b>
+Просто продолжай пользоваться подпиской! Уровень зависит от стажа — количества дней с момента первой оплаты. Каждый день с подпиской приближает тебя к следующему уровню ✨
+
+🎁 <b>Как выбрать бонус?</b>
+Когда достигаешь нового уровня, мы отправим тебе сообщение с выбором бонуса. Ты сможешь выбрать либо постоянную скидку, либо дополнительные дни доступа к клубу — решать только тебе! 💝
+
+💡 <b>Важно:</b>
+• Скидки <b>постоянные</b> — действуют на все будущие продления подписки
+• Стаж считается с момента первой оплаты
+• Бонусы доступны только при активной подписке{current_status}{next_level_info}"""
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
+            ]
+        )
+        
+        try:
+            await callback.message.delete()
+        except:
+            pass
+        
+        await callback.message.answer(
+            loyalty_info_text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        await callback.answer()
 
 
 # Обработчик нажатия кнопки "Реферальная программа"
@@ -2358,8 +2629,14 @@ async def process_manage_subscription(callback: types.CallbackQuery):
         profile_info_text += f"⏳ Осталось: *{escape_markdown_v2(days_text_for_profile)}*\n"
         profile_info_text += f"🔐 Статус подписки: *Активна* ✅\n\n"
 
+        # Формируем информацию о лояльности
+        loyalty_status_detailed = format_loyalty_status_detailed(user)
+        # Экранирование уже выполнено в функции format_loyalty_status_detailed
+        loyalty_status_escaped = loyalty_status_detailed
+
         manage_text = f"⚙️ *Управление подпиской Mom's Club*\n\n"
         manage_text += profile_info_text
+        manage_text += loyalty_status_escaped + "\n"
         manage_text += f"🔄 Статус автопродления: *{escaped_autorenewal_status}*\n\n"
 
         if not is_autorenewal_active:
@@ -2804,32 +3081,46 @@ async def process_subscription_extend_payment(callback: types.CallbackQuery, sta
                     )
                     logger.info(f"Обновлены параметры автопродления для подписки ID={active_subscription.id}: цена={renewal_price}, дни={renewal_duration_days}")
 
-                # Создаем платеж как обычно
+                # Применяем скидку лояльности
+                discount_percent = effective_discount(user)
+                final_price = price_with_discount(price, discount_percent)
+                
+                # Создаем платеж с учётом скидки
                 payment_url, payment_id, payment_label = create_payment_link(
-                    amount=price,
+                    amount=final_price,
                     user_id=user.telegram_id,
                     description=f"Продление подписки на Mom's Club на {days} дней (username: @{user.username})",
                     sub_type=sub_type,
                     days=days,
-                    phone=user.phone
+                    phone=user.phone,
+                    discount_percent=discount_percent
                 )
                 
                 if not payment_url or not payment_id:
                     await callback.answer("Ошибка создания платежа. Попробуйте позже.", show_alert=True)
                     return
                 
-                # Создаем запись о платеже
+                # Создаем запись о платеже (сохраняем исходную цену и скидку)
+                details_text = f"Продление подписки на {days} дней (c обновлением параметров автопродления)"
+                if discount_percent > 0:
+                    details_text += f" | Скидка лояльности: {discount_percent}% (было {price}₽, стало {final_price}₽)"
+                
                 await create_payment_log(
                     session,
                     user_id=user.id,
-                    amount=price,
+                    amount=final_price,  # Сохраняем итоговую сумму с учётом скидки
                     status="pending",
                     payment_method="yookassa",
                     transaction_id=payment_id,
-                    details=f"Продление подписки на {days} дней (c обновлением параметров автопродления)",
+                    details=details_text,
                     payment_label=payment_label,
                     days=days
                 )
+                
+                # Формируем текст с учётом скидки
+                price_text = f"{final_price} ₽"
+                if discount_percent > 0:
+                    price_text += f" <s>{price} ₽</s> <b>(−{discount_percent}%)</b>"
                 
                 # Создаем кнопку оплаты
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -2840,11 +3131,12 @@ async def process_subscription_extend_payment(callback: types.CallbackQuery, sta
                 # Отправляем сообщение с информацией о продлении и кнопкой оплаты
                 renewal_text = f"""<b>🎉 Продление подписки на Mom's Club</b>
 
-<b>Выбранный тариф:</b> {days} дней за {price} ₽
+<b>Выбранный тариф:</b> {days} дней за {price_text}
 
 <b>После оплаты:</b>
 • Ваша подписка будет продлена
 • Параметры автопродления будут обновлены
+{f"• Применена скидка лояльности: {discount_percent}%" if discount_percent > 0 else ""}
 
 <i>Для продолжения нажмите кнопку "Оплатить подписку" ниже</i>"""
                 
@@ -3059,6 +3351,157 @@ async def process_generic_back_button(callback: types.CallbackQuery):
         except Exception as e:
             logger.error(f"Ошибка в запасном обработчике кнопки Назад: {e}", exc_info=True)
             await callback.answer("Произошла ошибка, попробуйте /start")
+
+    # Обработчик выбора бонуса лояльности
+@user_router.callback_query(F.data.startswith("benefit:"))
+async def process_loyalty_benefit_choice(callback: types.CallbackQuery):
+    """Обрабатывает выбор бонуса лояльности пользователем"""
+    try:
+        # Парсим callback_data: benefit:<level>:<code>
+        parts = callback.data.split(":")
+        if len(parts) != 3:
+            await callback.answer("Неверный формат данных", show_alert=True)
+            return
+        
+        _, level, code = parts
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            
+            if not user:
+                await callback.answer("Пользователь не найден", show_alert=True)
+                return
+            
+            # Проверяем идемпотентность - проверяем, был ли уже выбран бонус для этого уровня
+            from sqlalchemy import select
+            from database.models import LoyaltyEvent
+            
+            benefit_check = await session.execute(
+                select(LoyaltyEvent.id).where(
+                    LoyaltyEvent.user_id == user.id,
+                    LoyaltyEvent.kind == 'benefit_chosen',
+                    LoyaltyEvent.level == level
+                )
+            )
+            
+            if benefit_check.scalar_one_or_none():
+                await callback.answer("Бонус для этого уровня уже выбран ✨", show_alert=True)
+                # Убираем клавиатуру, если она еще есть
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except:
+                    pass
+                return
+            
+            # Дополнительная проверка через флаг (для обратной совместимости)
+            if not user.pending_loyalty_reward:
+                await callback.answer("Бонус уже применён ✨", show_alert=True)
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except:
+                    pass
+                return
+            
+            # Валидация уровня и кода
+            valid_levels = ['silver', 'gold', 'platinum']
+            valid_codes = ['days_7', 'days_14', 'days_30_gift', 'discount_5', 'discount_10', 'discount_15_forever']
+            
+            if level not in valid_levels:
+                await callback.answer("Неверный уровень лояльности", show_alert=True)
+                return
+            
+            if code not in valid_codes:
+                await callback.answer("Неверный код бонуса", show_alert=True)
+                return
+            
+            # Применяем бонус
+            success = await apply_benefit_from_callback(session, user, level, code)
+            
+            if success:
+                # Формируем детали бонуса для уведомления админам
+                benefit_details = {}
+                if code in ['days_7', 'days_14', 'days_30_gift']:
+                    days_map = {'days_7': 7, 'days_14': 14, 'days_30_gift': 30}
+                    benefit_details['days'] = days_map.get(code, 0)
+                elif code in ['discount_5', 'discount_10', 'discount_15_forever']:
+                    discount_map = {'discount_5': 5, 'discount_10': 10, 'discount_15_forever': 15}
+                    benefit_details['discount_percent'] = discount_map.get(code, 0)
+                
+                # Отправляем уведомление администраторам
+                try:
+                    logger.info(f"Отправка уведомления админам о выборе бонуса: user_id={user.id}, level={level}, code={code}")
+                    await send_loyalty_benefit_notification_to_admins(
+                        callback.bot, 
+                        user, 
+                        level, 
+                        code,
+                        benefit_details
+                    )
+                    logger.info(f"✅ Уведомление админам успешно отправлено для user_id={user.id}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при отправке уведомления админам о выборе бонуса для user_id={user.id}: {e}", exc_info=True)
+                
+                # Убираем inline-клавиатуру у сообщения
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except:
+                    pass  # Если не удалось убрать клавиатуру, продолжаем
+                
+                # Отправляем подтверждение
+                await callback.answer("✅ Готово! Бонус применён ✨", show_alert=False)
+                
+                # Отправляем отдельное сообщение с деталями
+                benefit_texts = {
+                    'days_7': (
+                        '🎁 <b>Готово, красотка!</b> ✨\n\n'
+                        'Мы добавили тебе <b>+7 дней</b> доступа к клубу! 🩷\n\n'
+                        'Наслаждайся контентом и общением с девочками ещё дольше 💖'
+                    ),
+                    'days_14': (
+                        '🎁 <b>Готово, красотка!</b> ✨\n\n'
+                        'Мы добавили тебе <b>+14 дней</b> доступа к клубу! 🩷\n\n'
+                        'Теперь у тебя ещё больше времени для вдохновения и роста! 💖'
+                    ),
+                    'days_30_gift': (
+                        '🎁 <b>Ого, как же мы рады!</b> 😍✨\n\n'
+                        'Мы добавили тебе <b>+1 месяц</b> доступа к клубу!\n\n'
+                        'А ещё у тебя есть особенный подарок 🎀\n'
+                        'Мы свяжемся с тобой в ближайшее время для доставки — жди от нас сообщение! 💌\n\n'
+                        'Спасибо, что ты с нами целый год! 🩷🫂'
+                    ),
+                    'discount_5': (
+                        '💰 <b>Отлично, красотка!</b> ✨\n\n'
+                        'Теперь у тебя <b>постоянная скидка 5%</b> на все продления подписки! 💖\n\n'
+                        'Это наша благодарность за твою верность 🩷\n'
+                        'Ты всегда будешь платить меньше — просто за то, что ты с нами! 🫂'
+                    ),
+                    'discount_10': (
+                        '💰 <b>Отлично, красотка!</b> ✨\n\n'
+                        'Теперь у тебя <b>постоянная скидка 10%</b> на все продления подписки! 💖\n\n'
+                        'Это наша благодарность за твою верность 🩷\n'
+                        'Ты всегда будешь платить меньше — просто за то, что ты с нами! 🫂'
+                    ),
+                    'discount_15_forever': (
+                        '💎 <b>Поздравляем, красотка!</b> 😍✨\n\n'
+                        'Теперь у тебя <b>пожизненная скидка 15%</b> на все продления подписки! 🎀\n\n'
+                        'Это наша благодарность за целый год вместе 💖\n'
+                        'Ты всегда будешь платить меньше — просто за то, что ты с нами! 🩷🫂'
+                    ),
+                }
+                
+                benefit_text = benefit_texts.get(code, '🎁 Бонус успешно применён!')
+                
+                await callback.bot.send_message(
+                    chat_id=user.telegram_id,
+                    text=benefit_text,
+                    parse_mode="HTML"
+                )
+            else:
+                await callback.answer("Произошла ошибка при применении бонуса", show_alert=True)
+                
+    except Exception as e:
+        logger.error(f"Ошибка при обработке выбора бонуса лояльности: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
 
     # Заменяем существующий обработчик для всех callback_data с back_to_profile
 @user_router.callback_query(lambda c: "back_to_profile" in c.data)

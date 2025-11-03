@@ -131,6 +131,82 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
             session.add(user)
             payment_logger.info(f"Установлен флаг is_first_payment_done для пользователя {user.telegram_id} (оплата: {payment_amount} руб)")
         
+        # Устанавливаем дату первой оплаты для лояльности (если ещё не установлена)
+        # Используем дату создания платежа, а не текущее время
+        if not user.first_payment_date:
+            # Берем дату из payment_log_entry.created_at (дата создания записи о платеже)
+            # или текущую дату, если created_at не доступен
+            payment_date = payment_log_entry.created_at if payment_log_entry.created_at else datetime.now()
+            user.first_payment_date = payment_date
+            user.updated_at = datetime.now()
+            session.add(user)
+            payment_logger.info(f"Установлена дата первой оплаты для user_id={user.id}: {payment_date}")
+        
+        # Логируем применение скидки лояльности после успешного платежа (если была применена)
+        from loyalty.service import effective_discount
+        from database.models import LoyaltyEvent
+        import json
+        
+        applied_discount = effective_discount(user)
+        
+        # Проверяем, была ли применена скидка (разовая или постоянная)
+        # Разовую скидку сбрасываем, постоянную оставляем
+        if user.one_time_discount_percent > 0 and applied_discount == user.one_time_discount_percent:
+            # Сбрасываем только разовую скидку (старая логика, если кто-то использовал промокод)
+            old_discount = user.one_time_discount_percent
+            user.one_time_discount_percent = 0
+            user.updated_at = datetime.now()
+            session.add(user)
+            
+            # Записываем событие применения скидки
+            event = LoyaltyEvent(
+                user_id=user.id,
+                kind='bonus_applied',
+                level=user.current_loyalty_level,
+                payload=json.dumps({
+                    "benefit": f"discount_{old_discount}",
+                    "payment_id": payment_log_entry.transaction_id,
+                    "discount_percent": old_discount,
+                    "payment_amount": payment_amount,
+                    "type": "one_time"
+                }, ensure_ascii=False)
+            )
+            session.add(event)
+            
+            payment_logger.info(f"Сброшена разовая скидка {old_discount}% для user_id={user.id} после оплаты")
+            
+        elif user.lifetime_discount_percent > 0 and applied_discount == user.lifetime_discount_percent:
+            # Логируем применение постоянной скидки (но не сбрасываем её)
+            # Записываем событие применения скидки
+            event = LoyaltyEvent(
+                user_id=user.id,
+                kind='bonus_applied',
+                level=user.current_loyalty_level,
+                payload=json.dumps({
+                    "benefit": f"discount_{user.lifetime_discount_percent}",
+                    "payment_id": payment_log_entry.transaction_id,
+                    "discount_percent": user.lifetime_discount_percent,
+                    "payment_amount": payment_amount,
+                    "type": "lifetime"
+                }, ensure_ascii=False)
+            )
+            session.add(event)
+            
+            payment_logger.info(f"Логировано применение постоянной скидки {user.lifetime_discount_percent}% для user_id={user.id} (скидка сохранена)")
+        
+        # Сохраняем информацию о лояльности в подписке (для аудита)
+        if subscription:
+            from sqlalchemy import update
+            from database.models import Subscription
+            await session.execute(
+                update(Subscription)
+                .where(Subscription.id == subscription.id)
+                .values(
+                    loyalty_applied_level=user.current_loyalty_level,
+                    loyalty_discount_percent=applied_discount
+                )
+            )
+        
         # Привязываем платеж к подписке
         await update_payment_subscription(session, payment_log_entry.id, subscription.id)
         
@@ -269,6 +345,14 @@ async def yookassa_webhook_handler(request: Request):
         
         webhook_logger.info(f"Тело запроса: {body_str[:500]}...")
         
+        # Валидация подписи вебхука
+        from utils.payment import verify_yookassa_signature
+        client_ip = request.client.host if request.client else None
+        
+        if not verify_yookassa_signature(body_str, client_ip):
+            webhook_logger.warning(f"Вебхук не прошёл валидацию подписи от IP {client_ip}")
+            return JSONResponse({"status": "error", "message": "Invalid signature"}, status_code=403)
+        
         # Парсим JSON
         data = json.loads(body_str)
         
@@ -309,12 +393,32 @@ async def handle_payment_succeeded(payment):
         amount = int(float(payment.amount.value))
         metadata = payment.metadata or {}
         
+        # Получаем реальное время платежа от ЮКассы
+        payment_datetime = None
+        if hasattr(payment, 'captured_at') and payment.captured_at:
+            # captured_at - время когда платеж был подтвержден (оплачен)
+            from dateutil import parser
+            payment_datetime = parser.parse(payment.captured_at)
+        elif hasattr(payment, 'created_at') and payment.created_at:
+            # created_at - время создания платежа в ЮКассе
+            from dateutil import parser
+            payment_datetime = parser.parse(payment.created_at)
+        
         webhook_logger.info(f"Обработка успешного платежа: {payment_id}")
         webhook_logger.info(f"Метаданные: {metadata}")
+        if payment_datetime:
+            webhook_logger.info(f"Время платежа от ЮКассы: {payment_datetime} (UTC)")
+        else:
+            webhook_logger.warning(f"Не удалось получить время платежа от ЮКассы")
         
         async with AsyncSessionLocal() as session:
             # Ищем платеж в БД
             payment_log = await get_payment_by_transaction_id(session, payment_id)
+            
+            # ЗАЩИТА ОТ ПОВТОРНОЙ ОБРАБОТКИ: если платеж уже успешно обработан, пропускаем
+            if payment_log and payment_log.status == "success" and payment_log.is_confirmed:
+                webhook_logger.info(f"Платеж {payment_id} уже обработан (status=success, is_confirmed=True), пропускаем повторную обработку")
+                return  # Идемпотентность - не обрабатываем повторно
             
             if not payment_log:
                 webhook_logger.warning(f"Платеж {payment_id} не найден в БД, создаем новую запись")
@@ -334,7 +438,7 @@ async def handle_payment_succeeded(payment):
                 # Получаем количество дней
                 days = int(metadata.get("days", 30))
                 
-                # Создаем запись о платеже
+                # Создаем запись о платеже с реальным временем от ЮКассы
                 payment_log = await create_payment_log(
                     session,
                     user_id=user.id,
@@ -344,12 +448,28 @@ async def handle_payment_succeeded(payment):
                     transaction_id=payment_id,
                     details=f"ЮКасса: {payment.description}",
                     payment_label=metadata.get("payment_label"),
-                    days=days
+                    days=days,
+                    payment_datetime=payment_datetime  # Передаем реальное время платежа
                 )
             
             # Обновляем статус на success
             payment_log.status = "success"
             payment_log.is_confirmed = True
+            
+            # Если платеж уже существовал и есть реальное время от ЮКассы,
+            # обновляем его на реальное время (если время от ЮКассы более точное)
+            if payment_datetime:
+                # Конвертируем UTC в MSK если нужно
+                if payment_datetime.tzinfo is not None:
+                    try:
+                        import pytz
+                        msk_tz = pytz.timezone('Europe/Moscow')
+                        payment_datetime = payment_datetime.astimezone(msk_tz).replace(tzinfo=None)
+                    except ImportError:
+                        payment_datetime = payment_datetime.replace(tzinfo=None)
+                payment_log.created_at = payment_datetime
+                webhook_logger.info(f"Обновлено время платежа на реальное от ЮКассы: {payment_datetime}")
+            
             await session.commit()
             
             webhook_logger.info(f"Статус платежа обновлен: PaymentLog ID={payment_log.id}")
@@ -365,13 +485,13 @@ async def handle_payment_succeeded(payment):
             }
             
             success = await process_successful_payment(session, payment_log, payment_data_dict)
-        
-        if success:
-            webhook_logger.info(f"✅ Платеж {payment_id} успешно обработан")
-        else:
-            webhook_logger.error(f"❌ Ошибка обработки платежа {payment_id}")
-        
-        await session.commit()
+            
+            if success:
+                await session.commit()
+                webhook_logger.info(f"✅ Платеж {payment_id} успешно обработан")
+            else:
+                await session.rollback()
+                webhook_logger.error(f"❌ Ошибка обработки платежа {payment_id}")
         
     except Exception as e:
         webhook_logger.error(f"Ошибка в handle_payment_succeeded: {e}", exc_info=True)

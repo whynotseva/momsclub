@@ -37,7 +37,8 @@ def create_payment_link(amount: int,
                        days: Optional[int] = None,
                        return_url: str = None,
                        phone: str = None,
-                       email: str = None) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+                       email: str = None,
+                       discount_percent: int = 0) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Создает платеж в ЮКассе и возвращает ссылку для оплаты.
 
@@ -77,6 +78,11 @@ def create_payment_link(amount: int,
             "payment_label": payment_label,
             "days": str(days or 30)
         }
+        
+        # Добавляем информацию о скидке лояльности, если применена
+        if discount_percent > 0:
+            metadata["loyalty_discount_percent"] = str(discount_percent)
+            logger.info(f"Применена скидка лояльности: {discount_percent}%")
 
         # Формируем данные чека
         receipt_data = {
@@ -228,13 +234,14 @@ def check_payment_status(payment_id: str, expected_amount: float = None) -> Tupl
         return "failed", None
 
 
-def verify_yookassa_signature(notification_body: str) -> bool:
+def verify_yookassa_signature(notification_body: str, client_ip: str = None) -> bool:
     """
     Проверяет подпись вебхука от ЮКассы.
     ЮКасса проверяет по IP адресам, дополнительная проверка не требуется.
 
     Args:
         notification_body: тело уведомления
+        client_ip: IP адрес клиента (опционально, для логирования)
 
     Returns:
         bool: True если подпись корректна
@@ -254,6 +261,10 @@ def verify_yookassa_signature(notification_body: str) -> bool:
             if field not in data:
                 logger.warning(f"Отсутствует обязательное поле: {field}")
                 return False
+        
+        # Логируем IP для отладки
+        if client_ip:
+            logger.debug(f"Вебхук получен с IP: {client_ip}")
         
         return True
         

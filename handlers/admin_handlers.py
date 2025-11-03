@@ -39,7 +39,10 @@ from database.crud import (
     get_all_cancellation_requests,
     get_cancellation_requests_stats
 )
-from database.models import User, Subscription, PromoCode
+from database.models import User, Subscription, PromoCode, LoyaltyEvent
+from loyalty.service import effective_discount, send_choose_benefit_push
+from loyalty.levels import calc_tenure_days, level_for_days
+from loyalty.benefits import apply_benefit
 from datetime import datetime, timedelta
 import os
 import re # <-- Добавляем импорт модуля re
@@ -106,9 +109,16 @@ class AdminStates(StatesGroup):
     broadcast_media = State() # Прикрепление медиа (опционально)
     broadcast_confirm = State() # Подтверждение отправки
     broadcast_error_page = State() # Состояние для пагинации ошибок рассылки
+    # Состояния для системы лояльности
+    loyalty_waiting_user = State() # Ожидание ID/username для просмотра информации
+    loyalty_waiting_user_for_level = State() # Ожидание ID для установки уровня
+    loyalty_waiting_level = State() # Ожидание уровня
+    loyalty_waiting_user_for_grant = State() # Ожидание ID для выдачи бонуса
+    loyalty_waiting_benefit = State() # Ожидание кода бонуса
+    loyalty_waiting_report_dates = State() # Ожидание диапазона дат для отчёта
     
 # Обработчик команды /admin для проверки прав
-@admin_router.message(Command("admin"))
+@admin_router.message(Command("admin"), F.chat.type == "private")
 async def cmd_admin_check(message: types.Message):
     user_id = message.from_user.id
     logger.info(f"Вызвана команда /admin от пользователя с ID: {user_id}")
@@ -321,6 +331,51 @@ async def process_user_id(message: types.Message, state: FSMContext):
             else:
                 subscription_status = "❌ Отсутствует или истекла"
             
+            # Получаем информацию о лояльности
+            tenure_days = calc_tenure_days(user)
+            level = level_for_days(tenure_days)
+            discount = effective_discount(user)
+            
+            # Определяем эмодзи для уровня
+            level_emoji = {
+                'none': '',
+                'silver': '🥈',
+                'gold': '🥇',
+                'platinum': '💎'
+            }
+            level_display = f"{level_emoji.get(user.current_loyalty_level or 'none', '')} {user.current_loyalty_level or 'none'}"
+            
+            # Формируем информацию о лояльности
+            loyalty_info = ""
+            if user.first_payment_date:
+                first_payment = user.first_payment_date.strftime('%d.%m.%Y')
+                # Формируем строку со скидками
+                discount_lines = []
+                if user.one_time_discount_percent > 0:
+                    discount_lines.append(f"💰 Разовая скидка: {user.one_time_discount_percent}%")
+                if user.lifetime_discount_percent > 0:
+                    discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}% ✨ (лояльность)")
+                elif user.one_time_discount_percent == 0:
+                    discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}%")
+                
+                discount_info = "\n".join(discount_lines) if discount_lines else "💎 Постоянная скидка: 0%"
+                
+                loyalty_info = f"""
+<b>💎 Лояльность:</b>
+📅 Первая оплата: {first_payment}
+📊 Стаж: {tenure_days} дней
+⭐ Уровень: {level_display} (рассчитанный: {level})
+🎁 Ожидает бонус: {'Да' if user.pending_loyalty_reward else 'Нет'}
+{discount_info}
+💵 Эффективная скидка: {discount}%
+🎁 Подарок: {'Да' if user.gift_due else 'Нет'}
+"""
+            else:
+                loyalty_info = """
+<b>💎 Лояльность:</b>
+❌ Первая оплата не зафиксирована
+"""
+            
             user_info = f"""
 <b>👤 Информация о пользователе:</b>
 
@@ -334,16 +389,20 @@ async def process_user_id(message: types.Message, state: FSMContext):
 <b>Обновлен:</b> {user.updated_at.strftime('%d.%m.%Y %H:%M')}
 
 <b>Подписка:</b> {subscription_status}
+{loyalty_info}
 """
             
             # Кнопки управления пользователем
-            keyboard = InlineKeyboardButton(text="🎁 Выдать подписку", callback_data=f"admin_grant:{user.telegram_id}")
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [keyboard],
+                    [InlineKeyboardButton(text="🎁 Выдать подписку", callback_data=f"admin_grant:{user.telegram_id}")],
                     [
                         InlineKeyboardButton(text="➕ Добавить 30 дней", callback_data=f"admin_add_days:{user.telegram_id}:30"),
                         InlineKeyboardButton(text="➖ Убрать 30 дней", callback_data=f"admin_reduce_days:{user.telegram_id}:30")
+                    ],
+                    [
+                        InlineKeyboardButton(text="⭐ Изменить уровень", callback_data=f"admin_loyalty_set_level_from_user:{user.telegram_id}"),
+                        InlineKeyboardButton(text="🎁 Выдать бонус", callback_data=f"admin_loyalty_grant_from_user:{user.telegram_id}")
                     ],
                     [InlineKeyboardButton(text="📨 Написать пользователю", callback_data=f"admin_message_to:{user.telegram_id}")],
                     [InlineKeyboardButton(text="🚫 Забанить пользователя", callback_data=f"admin_ban_user:{user.telegram_id}")],
@@ -1004,6 +1063,7 @@ async def process_cancel(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📅 Сроки подписок", callback_data="admin_subscription_dates")],
             [InlineKeyboardButton(text="🎂 Дни рождения пользователей", callback_data="admin_birthdays:0")],
             [InlineKeyboardButton(text="🚫 Заявки на отмену автопродления", callback_data="admin_cancellation_requests")],
+            [InlineKeyboardButton(text="💎 Система лояльности", callback_data="admin_loyalty_menu")],
             [InlineKeyboardButton(text="📥 Экспорт пользователей", callback_data="admin_export_users")],
             [InlineKeyboardButton(text="✖️ Закрыть", callback_data="admin_close")]
         ]
@@ -1065,6 +1125,7 @@ async def process_back(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📅 Сроки подписок", callback_data="admin_subscription_dates")],
             [InlineKeyboardButton(text="🎂 Дни рождения пользователей", callback_data="admin_birthdays:0")],
             [InlineKeyboardButton(text="🚫 Заявки на отмену автопродления", callback_data="admin_cancellation_requests")],
+            [InlineKeyboardButton(text="💎 Система лояльности", callback_data="admin_loyalty_menu")],
             [InlineKeyboardButton(text="📥 Экспорт пользователей", callback_data="admin_export_users")],
             [InlineKeyboardButton(text="✖️ Закрыть", callback_data="admin_close")]
         ]
@@ -1341,7 +1402,7 @@ async def process_export_type(callback: CallbackQuery):
                 reply_markup=keyboard
             )
 
-@admin_router.message(Command("test_expire"))
+@admin_router.message(Command("test_expire"), F.chat.type == "private")
 async def cmd_test_expire(message: types.Message, state: FSMContext):
     """Начало процесса симуляции окончания подписки."""
     user_id = message.from_user.id
@@ -3724,7 +3785,1138 @@ async def show_pending_cancellations(callback: CallbackQuery):
     # Перенаправляем на новое меню
     await show_cancellation_requests_menu(callback)
 
-@admin_router.message(Command("contacted_cancel"))
+@admin_router.message(Command("user"), F.chat.type == "private")
+async def cmd_user_loyalty_info(message: types.Message):
+    """Команда для просмотра информации о пользователе, включая лояльность"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Использование: /user <telegram_id или username>")
+        return
+    
+    try:
+        user_identifier = parts[1]
+        user_id = None
+        
+        # Пытаемся распарсить как Telegram ID
+        try:
+            user_id = int(user_identifier)
+        except ValueError:
+            # Если не число, ищем по username
+            pass
+        
+        async with AsyncSessionLocal() as session:
+            if user_id:
+                user = await get_user_by_telegram_id(session, user_id)
+            else:
+                user = await get_user_by_username(session, user_identifier)
+            
+            if not user:
+                await message.answer(f"Пользователь не найден: {user_identifier}")
+                return
+            
+            # Получаем активную подписку
+            active_sub = await get_active_subscription(session, user.id)
+            
+            # Подсчитываем стаж
+            tenure_days = calc_tenure_days(user)
+            level = level_for_days(tenure_days)
+            
+            # Формируем информацию
+            discount = effective_discount(user)
+            
+            # Формируем строку со скидками
+            discount_lines = []
+            if user.one_time_discount_percent > 0:
+                discount_lines.append(f"💰 Разовая скидка: {user.one_time_discount_percent}%")
+            if user.lifetime_discount_percent > 0:
+                discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}% ✨ (лояльность)")
+            else:
+                discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}%")
+            
+            discount_info = "\n".join(discount_lines) if discount_lines else "💎 Постоянная скидка: 0%"
+            
+            info_text = (
+                f"👤 <b>Информация о пользователе</b>\n\n"
+                f"🆔 Telegram ID: <code>{user.telegram_id}</code>\n"
+                f"👤 Имя: {user.first_name} {user.last_name or ''}\n"
+                f"📱 Username: @{user.username or 'не указан'}\n\n"
+                f"<b>💎 Лояльность:</b>\n"
+                f"📅 Стаж: {tenure_days} дней\n"
+                f"⭐ Уровень: {user.current_loyalty_level or 'none'} (рассчитанный: {level})\n"
+                f"🎁 Ожидает бонус: {'Да' if user.pending_loyalty_reward else 'Нет'}\n"
+                f"{discount_info}\n"
+                f"🎁 Подарок: {'Да' if user.gift_due else 'Нет'}\n"
+                f"💵 Эффективная скидка: {discount}%\n"
+            )
+            
+            if active_sub:
+                end_date = active_sub.end_date.strftime('%d.%m.%Y')
+                info_text += (
+                    f"\n<b>📅 Подписка:</b>\n"
+                    f"До: {end_date}\n"
+                    f"Статус: {'Активна' if active_sub.is_active else 'Неактивна'}\n"
+                )
+            else:
+                info_text += "\n<b>📅 Подписка:</b> Нет активной подписки\n"
+            
+            if user.first_payment_date:
+                first_payment = user.first_payment_date.strftime('%d.%m.%Y')
+                info_text += f"\n📆 Первая оплата: {first_payment}\n"
+            
+            await message.answer(info_text, parse_mode="HTML")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в команде /user: {e}", exc_info=True)
+        await message.answer(f"Ошибка: {e}")
+
+
+@admin_router.message(Command("setlevel"), F.chat.type == "private")
+async def cmd_set_loyalty_level(message: types.Message):
+    """Команда для принудительной установки уровня лояльности"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer("Использование: /setlevel <telegram_id> <silver|gold|platinum|none>")
+        return
+    
+    try:
+        user_id = int(parts[1])
+        level = parts[2].lower()
+        
+        if level not in ['none', 'silver', 'gold', 'platinum']:
+            await message.answer("Неверный уровень. Используйте: none, silver, gold, platinum")
+            return
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, user_id)
+            
+            if not user:
+                await message.answer(f"Пользователь не найден: {user_id}")
+                return
+            
+            # Обновляем уровень
+            await session.execute(
+                update(User)
+                .where(User.id == user.id)
+                .values(current_loyalty_level=level)
+            )
+            await session.commit()
+            
+            await message.answer(f"✅ Уровень лояльности установлен: {level} для пользователя {user_id}")
+            
+    except ValueError:
+        await message.answer("Неверный формат Telegram ID")
+    except Exception as e:
+        logger.error(f"Ошибка в команде /setlevel: {e}", exc_info=True)
+        await message.answer(f"Ошибка: {e}")
+
+
+@admin_router.message(Command("grant"), F.chat.type == "private")
+async def cmd_grant_loyalty_benefit(message: types.Message):
+    """Команда для выдачи бонуса лояльности вручную"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer(
+            "Использование: /grant <telegram_id> <benefit_code>\n\n"
+            "Коды бонусов:\n"
+            "• discount_5 - скидка 5%\n"
+            "• discount_10 - скидка 10%\n"
+            "• discount_15_forever - скидка 15% навсегда\n"
+            "• days_7 - 7 дней доступа\n"
+            "• days_14 - 14 дней доступа\n"
+            "• days_30_gift - 30 дней + подарок"
+        )
+        return
+    
+    try:
+        user_id = int(parts[1])
+        code = parts[2].lower()
+        
+        valid_codes = ['discount_5', 'discount_10', 'discount_15_forever', 'days_7', 'days_14', 'days_30_gift']
+        if code not in valid_codes:
+            await message.answer(f"Неверный код бонуса. Допустимые: {', '.join(valid_codes)}")
+            return
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, user_id)
+            
+            if not user:
+                await message.answer(f"Пользователь не найден: {user_id}")
+                return
+            
+            # Определяем уровень для логирования
+            level = user.current_loyalty_level or 'none'
+            if level == 'none':
+                level = 'silver'  # По умолчанию для админ-выдачи
+            
+            # Применяем бонус
+            success = await apply_benefit(session, user, level, code)
+            
+            if success:
+                await message.answer(f"✅ Бонус {code} успешно применён пользователю {user_id}")
+            else:
+                await message.answer(f"❌ Не удалось применить бонус {code} пользователю {user_id}")
+            
+    except ValueError:
+        await message.answer("Неверный формат Telegram ID")
+    except Exception as e:
+        logger.error(f"Ошибка в команде /grant: {e}", exc_info=True)
+        await message.answer(f"Ошибка: {e}")
+
+
+@admin_router.message(Command("report"), F.chat.type == "private")
+async def cmd_loyalty_report(message: types.Message):
+    """Команда для генерации CSV отчёта по лояльности"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 3 or parts[1] != "levels":
+        await message.answer(
+            "Использование: /report levels <YYYY-MM-DD>..<YYYY-MM-DD>\n\n"
+            "Пример: /report levels 2025-01-01..2025-11-30"
+        )
+        return
+    
+    try:
+        date_range = parts[2]
+        if ".." not in date_range:
+            await message.answer("Неверный формат диапазона дат. Используйте: YYYY-MM-DD..YYYY-MM-DD")
+            return
+        
+        start_str, end_str = date_range.split("..")
+        start_date = datetime.strptime(start_str.strip(), "%Y-%m-%d")
+        end_date = datetime.strptime(end_str.strip(), "%Y-%m-%d")
+        
+        async with AsyncSessionLocal() as session:
+            # Получаем события лояльности за период
+            query = (
+                select(LoyaltyEvent, User)
+                .join(User, LoyaltyEvent.user_id == User.id)
+                .where(LoyaltyEvent.created_at >= start_date)
+                .where(LoyaltyEvent.created_at <= end_date + timedelta(days=1))
+                .order_by(LoyaltyEvent.created_at.desc())
+            )
+            
+            result = await session.execute(query)
+            events = result.all()
+            
+            if not events:
+                await message.answer(f"Нет данных за период {start_str} - {end_str}")
+                return
+            
+            # Формируем CSV
+            import csv
+            import io
+            
+            output = io.StringIO()
+            writer = csv.writer(output)
+            
+            # Заголовки
+            writer.writerow([
+                'user_id', 'telegram_id', 'username', 'level', 'chosen_benefit',
+                'tenure_days', 'active_until', 'discount_one_time', 'discount_lifetime',
+                'gift_due', 'dt'
+            ])
+            
+            # Данные
+            for event, user in events:
+                active_sub = await get_active_subscription(session, user.id)
+                tenure_days = calc_tenure_days(user)
+                
+                # Парсим benefit из payload
+                chosen_benefit = None
+                if event.payload:
+                    try:
+                        import json
+                        payload = json.loads(event.payload)
+                        chosen_benefit = payload.get('benefit')
+                    except:
+                        pass
+                
+                active_until = active_sub.end_date.strftime('%Y-%m-%d') if active_sub else 'N/A'
+                
+                writer.writerow([
+                    user.id,
+                    user.telegram_id,
+                    user.username or '',
+                    event.level or user.current_loyalty_level or 'none',
+                    chosen_benefit or '',
+                    tenure_days,
+                    active_until,
+                    user.one_time_discount_percent,
+                    user.lifetime_discount_percent,
+                    'Да' if user.gift_due else 'Нет',
+                    event.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                ])
+            
+            csv_content = output.getvalue()
+            output.close()
+            
+            # Сохраняем файл временно и отправляем
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8-sig') as f:
+                f.write(csv_content)
+                temp_path = f.name
+            
+            await message.answer_document(
+                FSInputFile(temp_path),
+                caption=f"Отчёт по лояльности за период {start_str} - {end_str} ({len(events)} записей)"
+            )
+            
+            # Удаляем временный файл после отправки
+            try:
+                await asyncio.sleep(1)  # Даём время на отправку
+                os.unlink(temp_path)
+            except:
+                pass
+            
+    except ValueError as e:
+        await message.answer(f"Ошибка формата даты: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка в команде /report: {e}", exc_info=True)
+        await message.answer(f"Ошибка: {e}")
+
+
+# ==================== СИСТЕМА ЛОЯЛЬНОСТИ ====================
+
+@admin_router.callback_query(F.data == "admin_loyalty_menu")
+async def show_loyalty_menu(callback: CallbackQuery):
+    """Показать меню системы лояльности"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+        return
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Информация о пользователе", callback_data="admin_loyalty_user_info")],
+            [InlineKeyboardButton(text="⭐ Установить уровень", callback_data="admin_loyalty_set_level")],
+            [InlineKeyboardButton(text="🎁 Выдать бонус", callback_data="admin_loyalty_grant_benefit")],
+            [InlineKeyboardButton(text="📊 Отчёт по лояльности", callback_data="admin_loyalty_report")],
+            [InlineKeyboardButton(text="« Назад", callback_data="admin_back")]
+        ]
+    )
+    
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                caption="💎 <b>Система лояльности</b>\n\nВыберите действие:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await callback.message.edit_text(
+                "💎 <b>Система лояльности</b>\n\nВыберите действие:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Ошибка при отображении меню лояльности: {e}")
+        await callback.message.answer(
+            "💎 <b>Система лояльности</b>\n\nВыберите действие:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data == "admin_loyalty_user_info")
+async def loyalty_user_info_start(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс поиска пользователя для просмотра лояльности"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.loyalty_waiting_user)
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="« Отмена", callback_data="admin_loyalty_menu")]]
+    )
+    
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                "👤 <b>Информация о пользователе</b>\n\n"
+                "Введите Telegram ID или Username пользователя:\n"
+                "(ID должен быть числом, username - с символом @)",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await callback.message.edit_text(
+                "👤 <b>Информация о пользователе</b>\n\n"
+                "Введите Telegram ID или Username пользователя:\n"
+                "(ID должен быть числом, username - с символом @)",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    except:
+        await callback.message.answer(
+            "👤 <b>Информация о пользователе</b>\n\n"
+            "Введите Telegram ID или Username пользователя:\n"
+            "(ID должен быть числом, username - с символом @)",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    
+    await callback.answer()
+
+
+@admin_router.message(StateFilter(AdminStates.loyalty_waiting_user))
+async def loyalty_show_user_info(message: types.Message, state: FSMContext):
+    """Показать информацию о пользователе с данными лояльности"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    search_term = message.text.strip()
+    
+    async with AsyncSessionLocal() as session:
+        user = None
+        
+        if search_term.startswith("@"):
+            username = search_term[1:]
+            user = await get_user_by_username(session, username)
+        else:
+            try:
+                user_id = int(search_term)
+                user = await get_user_by_telegram_id(session, user_id)
+            except ValueError:
+                await message.answer("❌ Некорректный формат! Введите числовой ID или username с символом @")
+                return
+        
+        if not user:
+            await message.answer(f"❌ Пользователь не найден: {search_term}")
+            await state.clear()
+            return
+        
+        # Получаем активную подписку
+        active_sub = await get_active_subscription(session, user.id)
+        
+        # Подсчитываем стаж
+        tenure_days = calc_tenure_days(user)
+        level = level_for_days(tenure_days)
+        discount = effective_discount(user)
+        
+        # Формируем информацию
+        # Формируем строку со скидками
+        discount_lines = []
+        if user.one_time_discount_percent > 0:
+            discount_lines.append(f"💰 Разовая скидка: {user.one_time_discount_percent}%")
+        if user.lifetime_discount_percent > 0:
+            discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}% ✨ (лояльность)")
+        else:
+            discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}%")
+        
+        discount_info = "\n".join(discount_lines) if discount_lines else "💎 Постоянная скидка: 0%"
+        
+        info_text = (
+            f"👤 <b>Информация о пользователе</b>\n\n"
+            f"🆔 Telegram ID: <code>{user.telegram_id}</code>\n"
+            f"👤 Имя: {user.first_name} {user.last_name or ''}\n"
+            f"📱 Username: @{user.username or 'не указан'}\n\n"
+            f"<b>💎 Лояльность:</b>\n"
+            f"📅 Стаж: {tenure_days} дней\n"
+            f"⭐ Уровень: {user.current_loyalty_level or 'none'} (рассчитанный: {level})\n"
+            f"🎁 Ожидает бонус: {'Да' if user.pending_loyalty_reward else 'Нет'}\n"
+            f"{discount_info}\n"
+            f"🎁 Подарок: {'Да' if user.gift_due else 'Нет'}\n"
+            f"💵 Эффективная скидка: {discount}%\n"
+        )
+        
+        if active_sub:
+            end_date = active_sub.end_date.strftime('%d.%m.%Y')
+            info_text += (
+                f"\n<b>📅 Подписка:</b>\n"
+                f"До: {end_date}\n"
+                f"Статус: {'Активна' if active_sub.is_active else 'Неактивна'}\n"
+            )
+        else:
+            info_text += "\n<b>📅 Подписка:</b> Нет активной подписки\n"
+        
+        if user.first_payment_date:
+            first_payment = user.first_payment_date.strftime('%d.%m.%Y')
+            info_text += f"\n📆 Первая оплата: {first_payment}\n"
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад в меню лояльности", callback_data="admin_loyalty_menu")]
+            ]
+        )
+        
+        await message.answer(info_text, reply_markup=keyboard, parse_mode="HTML")
+        await state.clear()
+
+
+@admin_router.callback_query(F.data == "admin_loyalty_set_level")
+async def loyalty_set_level_start(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс установки уровня лояльности"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.loyalty_waiting_user_for_level)
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="« Отмена", callback_data="admin_loyalty_menu")]]
+    )
+    
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                "⭐ <b>Установить уровень лояльности</b>\n\n"
+                "Введите Telegram ID пользователя:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await callback.message.edit_text(
+                "⭐ <b>Установить уровень лояльности</b>\n\n"
+                "Введите Telegram ID пользователя:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    except:
+        await callback.message.answer(
+            "⭐ <b>Установить уровень лояльности</b>\n\n"
+            "Введите Telegram ID пользователя:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    
+    await callback.answer()
+
+
+@admin_router.message(StateFilter(AdminStates.loyalty_waiting_user_for_level))
+async def loyalty_set_level_get_user(message: types.Message, state: FSMContext):
+    """Получить пользователя и запросить уровень"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        user_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Некорректный формат! Введите числовой Telegram ID")
+        return
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, user_id)
+        if not user:
+            await message.answer(f"❌ Пользователь не найден: {user_id}")
+            await state.clear()
+            return
+        
+        await state.update_data(loyalty_user_id=user_id)
+        await state.set_state(AdminStates.loyalty_waiting_level)
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="none", callback_data="loyalty_level:none"),
+                    InlineKeyboardButton(text="silver", callback_data="loyalty_level:silver"),
+                ],
+                [
+                    InlineKeyboardButton(text="gold", callback_data="loyalty_level:gold"),
+                    InlineKeyboardButton(text="platinum", callback_data="loyalty_level:platinum"),
+                ],
+                [InlineKeyboardButton(text="« Отмена", callback_data="admin_loyalty_menu")]
+            ]
+        )
+        
+        await message.answer(
+            f"Выберите уровень для пользователя {user_id}:\n"
+            f"(Текущий уровень: {user.current_loyalty_level or 'none'})",
+            reply_markup=keyboard
+        )
+
+
+@admin_router.callback_query(F.data.startswith("loyalty_level:"))
+async def loyalty_set_level_apply(callback: CallbackQuery, state: FSMContext):
+    """Применить выбранный уровень"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    level = callback.data.split(":")[1]
+    
+    data = await state.get_data()
+    user_id = data.get("loyalty_user_id")
+    
+    if not user_id:
+        await callback.answer("Ошибка: пользователь не найден", show_alert=True)
+        await state.clear()
+        return
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, user_id)
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            await state.clear()
+            return
+        
+        await session.execute(
+            update(User)
+            .where(User.id == user.id)
+            .values(current_loyalty_level=level)
+        )
+        await session.commit()
+        
+        await callback.answer(f"✅ Уровень установлен: {level}", show_alert=False)
+        
+        # Проверяем, был ли вызов из карточки пользователя (telegram_id > 100000000 означает telegram_id)
+        # Используем user.telegram_id, так как user_id в state может быть и id базы, и telegram_id
+        if user.telegram_id and user.telegram_id > 100000000:
+            # Возвращаемся к карточке пользователя
+            callback.data = f"admin_refresh_user:{user.telegram_id}"
+            await refresh_user_info(callback, state)
+            return
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="« Назад в меню лояльности", callback_data="admin_loyalty_menu")]]
+        )
+        
+        try:
+            await callback.message.edit_text(
+                f"✅ Уровень лояльности установлен: <b>{level}</b> для пользователя {user_id}",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except:
+            await callback.message.answer(
+                f"✅ Уровень лояльности установлен: <b>{level}</b> для пользователя {user_id}",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        
+        await state.clear()
+
+
+@admin_router.callback_query(F.data == "admin_loyalty_grant_benefit")
+async def loyalty_grant_benefit_start(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс выдачи бонуса"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.loyalty_waiting_user_for_grant)
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="« Отмена", callback_data="admin_loyalty_menu")]]
+    )
+    
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                "🎁 <b>Выдать бонус</b>\n\nВведите Telegram ID пользователя:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await callback.message.edit_text(
+                "🎁 <b>Выдать бонус</b>\n\nВведите Telegram ID пользователя:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    except:
+        await callback.message.answer(
+            "🎁 <b>Выдать бонус</b>\n\nВведите Telegram ID пользователя:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    
+    await callback.answer()
+
+
+@admin_router.message(StateFilter(AdminStates.loyalty_waiting_user_for_grant))
+async def loyalty_grant_benefit_get_user(message: types.Message, state: FSMContext):
+    """Получить пользователя и запросить бонус"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        user_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Некорректный формат! Введите числовой Telegram ID")
+        return
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, user_id)
+        if not user:
+            await message.answer(f"❌ Пользователь не найден: {user_id}")
+            await state.clear()
+            return
+        
+        await state.update_data(loyalty_grant_user_id=user_id)
+        await state.set_state(AdminStates.loyalty_waiting_benefit)
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="5% скидка", callback_data="loyalty_benefit:discount_5"),
+                    InlineKeyboardButton(text="10% скидка", callback_data="loyalty_benefit:discount_10"),
+                ],
+                [
+                    InlineKeyboardButton(text="15% навсегда", callback_data="loyalty_benefit:discount_15_forever"),
+                    InlineKeyboardButton(text="7 дней", callback_data="loyalty_benefit:days_7"),
+                ],
+                [
+                    InlineKeyboardButton(text="14 дней", callback_data="loyalty_benefit:days_14"),
+                    InlineKeyboardButton(text="30 дней+подарок", callback_data="loyalty_benefit:days_30_gift"),
+                ],
+                [InlineKeyboardButton(text="« Отмена", callback_data="admin_loyalty_menu")]
+            ]
+        )
+        
+        await message.answer(
+            f"Выберите бонус для пользователя {user_id}:",
+            reply_markup=keyboard
+        )
+
+
+@admin_router.callback_query(F.data.startswith("loyalty_benefit:"))
+async def loyalty_grant_benefit_apply(callback: CallbackQuery, state: FSMContext):
+    """Применить выбранный бонус"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    code = callback.data.split(":")[1]
+    
+    data = await state.get_data()
+    user_id = data.get("loyalty_grant_user_id")
+    
+    if not user_id:
+        await callback.answer("Ошибка: пользователь не найден", show_alert=True)
+        await state.clear()
+        return
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, user_id)
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            await state.clear()
+            return
+        
+        level = user.current_loyalty_level or 'silver'
+        
+        success = await apply_benefit(session, user, level, code)
+        
+        if success:
+            await callback.answer(f"✅ Бонус {code} успешно применён", show_alert=False)
+        else:
+            await callback.answer("❌ Не удалось применить бонус", show_alert=True)
+            result_text = f"❌ Не удалось применить бонус {code} пользователю {user_id}"
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="« Назад в меню лояльности", callback_data="admin_loyalty_menu")]]
+            )
+            try:
+                await callback.message.edit_text(result_text, reply_markup=keyboard, parse_mode="HTML")
+            except:
+                await callback.message.answer(result_text, reply_markup=keyboard, parse_mode="HTML")
+            await state.clear()
+            return
+        
+        # Проверяем, был ли вызов из карточки пользователя
+        if user.telegram_id and user.telegram_id > 100000000:
+            # Возвращаемся к карточке пользователя
+            callback.data = f"admin_refresh_user:{user.telegram_id}"
+            await refresh_user_info(callback, state)
+            return
+        
+        result_text = f"✅ Бонус <b>{code}</b> успешно применён пользователю {user_id}"
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="« Назад в меню лояльности", callback_data="admin_loyalty_menu")]]
+        )
+        
+        try:
+            await callback.message.edit_text(result_text, reply_markup=keyboard, parse_mode="HTML")
+        except:
+            await callback.message.answer(result_text, reply_markup=keyboard, parse_mode="HTML")
+        
+        await state.clear()
+
+
+@admin_router.callback_query(F.data == "admin_loyalty_report")
+async def loyalty_report_start(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс генерации отчёта"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.loyalty_waiting_report_dates)
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="« Отмена", callback_data="admin_loyalty_menu")]]
+    )
+    
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                "📊 <b>Отчёт по лояльности</b>\n\n"
+                "Введите диапазон дат в формате:\n"
+                "<code>YYYY-MM-DD..YYYY-MM-DD</code>\n\n"
+                "Пример: <code>2025-01-01..2025-11-30</code>",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await callback.message.edit_text(
+                "📊 <b>Отчёт по лояльности</b>\n\n"
+                "Введите диапазон дат в формате:\n"
+                "<code>YYYY-MM-DD..YYYY-MM-DD</code>\n\n"
+                "Пример: <code>2025-01-01..2025-11-30</code>",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    except:
+        await callback.message.answer(
+            "📊 <b>Отчёт по лояльности</b>\n\n"
+            "Введите диапазон дат в формате:\n"
+            "<code>YYYY-MM-DD..YYYY-MM-DD</code>\n\n"
+            "Пример: <code>2025-01-01..2025-11-30</code>",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    
+    await callback.answer()
+
+
+@admin_router.message(StateFilter(AdminStates.loyalty_waiting_report_dates))
+async def loyalty_report_generate(message: types.Message, state: FSMContext):
+    """Сгенерировать CSV отчёт"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    date_range = message.text.strip()
+    
+    if ".." not in date_range:
+        await message.answer("❌ Неверный формат диапазона дат. Используйте: YYYY-MM-DD..YYYY-MM-DD")
+        return
+    
+    try:
+        start_str, end_str = date_range.split("..")
+        start_date = datetime.strptime(start_str.strip(), "%Y-%m-%d")
+        end_date = datetime.strptime(end_str.strip(), "%Y-%m-%d")
+    except ValueError as e:
+        await message.answer(f"❌ Ошибка формата даты: {e}")
+        return
+    
+    async with AsyncSessionLocal() as session:
+        query = (
+            select(LoyaltyEvent, User)
+            .join(User, LoyaltyEvent.user_id == User.id)
+            .where(LoyaltyEvent.created_at >= start_date)
+            .where(LoyaltyEvent.created_at <= end_date + timedelta(days=1))
+            .order_by(LoyaltyEvent.created_at.desc())
+        )
+        
+        result = await session.execute(query)
+        events = result.all()
+        
+        if not events:
+            await message.answer(f"❌ Нет данных за период {start_str} - {end_str}")
+            await state.clear()
+            return
+        
+        # Формируем CSV
+        import csv
+        import io
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow([
+            'user_id', 'telegram_id', 'username', 'level', 'chosen_benefit',
+            'tenure_days', 'active_until', 'discount_one_time', 'discount_lifetime',
+            'gift_due', 'dt'
+        ])
+        
+        for event, user in events:
+            active_sub = await get_active_subscription(session, user.id)
+            tenure_days = calc_tenure_days(user)
+            
+            chosen_benefit = None
+            if event.payload:
+                try:
+                    import json
+                    payload = json.loads(event.payload)
+                    chosen_benefit = payload.get('benefit')
+                except:
+                    pass
+            
+            active_until = active_sub.end_date.strftime('%Y-%m-%d') if active_sub else 'N/A'
+            
+            writer.writerow([
+                user.id,
+                user.telegram_id,
+                user.username or '',
+                event.level or user.current_loyalty_level or 'none',
+                chosen_benefit or '',
+                tenure_days,
+                active_until,
+                user.one_time_discount_percent,
+                user.lifetime_discount_percent,
+                'Да' if user.gift_due else 'Нет',
+                event.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            ])
+        
+        csv_content = output.getvalue()
+        output.close()
+        
+        # Сохраняем файл временно и отправляем
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8-sig') as f:
+            f.write(csv_content)
+            temp_path = f.name
+        
+        await message.answer_document(
+            FSInputFile(temp_path),
+            caption=f"📊 Отчёт по лояльности за период {start_str} - {end_str} ({len(events)} записей)"
+        )
+        
+        try:
+            await asyncio.sleep(1)
+            os.unlink(temp_path)
+        except:
+            pass
+        
+        await state.clear()
+
+
+@admin_router.callback_query(F.data.startswith("admin_loyalty_set_level_from_user:"))
+async def loyalty_set_level_from_user(callback: CallbackQuery, state: FSMContext):
+    """Обработчик установки уровня лояльности прямо из карточки пользователя"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    telegram_id = int(callback.data.split(":")[1])
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, telegram_id)
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+        
+        await state.update_data(loyalty_user_id=telegram_id)
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="none", callback_data="loyalty_level:none"),
+                    InlineKeyboardButton(text="silver", callback_data="loyalty_level:silver"),
+                ],
+                [
+                    InlineKeyboardButton(text="gold", callback_data="loyalty_level:gold"),
+                    InlineKeyboardButton(text="platinum", callback_data="loyalty_level:platinum"),
+                ],
+                [InlineKeyboardButton(text="« Назад к пользователю", callback_data=f"admin_refresh_user:{telegram_id}")]
+            ]
+        )
+        
+        try:
+            await callback.message.edit_text(
+                f"⭐ <b>Изменить уровень лояльности</b>\n\n"
+                f"Пользователь: {user.first_name} (@{user.username or user.telegram_id})\n"
+                f"Текущий уровень: {user.current_loyalty_level or 'none'}\n\n"
+                f"Выберите новый уровень:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except:
+            await callback.message.answer(
+                f"⭐ <b>Изменить уровень лояльности</b>\n\n"
+                f"Пользователь: {user.first_name} (@{user.username or user.telegram_id})\n"
+                f"Текущий уровень: {user.current_loyalty_level or 'none'}\n\n"
+                f"Выберите новый уровень:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        
+        await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("admin_loyalty_grant_from_user:"))
+async def loyalty_grant_from_user(callback: CallbackQuery, state: FSMContext):
+    """Обработчик выдачи бонуса лояльности прямо из карточки пользователя"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    telegram_id = int(callback.data.split(":")[1])
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, telegram_id)
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+        
+        await state.update_data(loyalty_grant_user_id=telegram_id)
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="5% скидка", callback_data="loyalty_benefit:discount_5"),
+                    InlineKeyboardButton(text="10% скидка", callback_data="loyalty_benefit:discount_10"),
+                ],
+                [
+                    InlineKeyboardButton(text="15% навсегда", callback_data="loyalty_benefit:discount_15_forever"),
+                    InlineKeyboardButton(text="7 дней", callback_data="loyalty_benefit:days_7"),
+                ],
+                [
+                    InlineKeyboardButton(text="14 дней", callback_data="loyalty_benefit:days_14"),
+                    InlineKeyboardButton(text="30 дней+подарок", callback_data="loyalty_benefit:days_30_gift"),
+                ],
+                [InlineKeyboardButton(text="« Назад к пользователю", callback_data=f"admin_refresh_user:{telegram_id}")]
+            ]
+        )
+        
+        try:
+            await callback.message.edit_text(
+                f"🎁 <b>Выдать бонус лояльности</b>\n\n"
+                f"Пользователь: {user.first_name} (@{user.username or user.telegram_id})\n"
+                f"Текущий уровень: {user.current_loyalty_level or 'none'}\n\n"
+                f"Выберите бонус:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except:
+            await callback.message.answer(
+                f"🎁 <b>Выдать бонус лояльности</b>\n\n"
+                f"Пользователь: {user.first_name} (@{user.username or user.telegram_id})\n"
+                f"Текущий уровень: {user.current_loyalty_level or 'none'}\n\n"
+                f"Выберите бонус:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        
+        await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("admin_refresh_user:"))
+async def refresh_user_info(callback: CallbackQuery, state: FSMContext):
+    """Обновить информацию о пользователе после действий с лояльностью"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    telegram_id = int(callback.data.split(":")[1])
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, telegram_id)
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+        
+        # Получаем информацию о подписке
+        subscription = await get_active_subscription(session, user.id)
+        
+        if subscription:
+            days_left = (subscription.end_date - datetime.now()).days
+            subscription_status = f"✅ Активна до {subscription.end_date.strftime('%d.%m.%Y')} (осталось дней: {days_left})"
+        else:
+            subscription_status = "❌ Отсутствует или истекла"
+        
+        # Получаем информацию о лояльности
+        tenure_days = calc_tenure_days(user)
+        level = level_for_days(tenure_days)
+        discount = effective_discount(user)
+        
+        # Определяем эмодзи для уровня
+        level_emoji = {
+            'none': '',
+            'silver': '🥈',
+            'gold': '🥇',
+            'platinum': '💎'
+        }
+        level_display = f"{level_emoji.get(user.current_loyalty_level or 'none', '')} {user.current_loyalty_level or 'none'}"
+        
+        # Формируем информацию о лояльности
+        loyalty_info = ""
+        if user.first_payment_date:
+            first_payment = user.first_payment_date.strftime('%d.%m.%Y')
+            # Формируем строку со скидками
+            discount_lines = []
+            if user.one_time_discount_percent > 0:
+                discount_lines.append(f"💰 Разовая скидка: {user.one_time_discount_percent}%")
+            if user.lifetime_discount_percent > 0:
+                discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}% ✨ (лояльность)")
+            elif user.one_time_discount_percent == 0:
+                discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}%")
+            
+            discount_info = "\n".join(discount_lines) if discount_lines else "💎 Постоянная скидка: 0%"
+            
+            loyalty_info = f"""
+<b>💎 Лояльность:</b>
+📅 Первая оплата: {first_payment}
+📊 Стаж: {tenure_days} дней
+⭐ Уровень: {level_display} (рассчитанный: {level})
+🎁 Ожидает бонус: {'Да' if user.pending_loyalty_reward else 'Нет'}
+{discount_info}
+💵 Эффективная скидка: {discount}%
+🎁 Подарок: {'Да' if user.gift_due else 'Нет'}
+"""
+        else:
+            loyalty_info = """
+<b>💎 Лояльность:</b>
+❌ Первая оплата не зафиксирована
+"""
+        
+        user_info = f"""
+<b>👤 Информация о пользователе:</b>
+
+<b>ID в базе:</b> {user.id}
+<b>Telegram ID:</b> {user.telegram_id}
+<b>Username:</b> {user.username or "Не указан"}
+<b>Имя:</b> {user.first_name or "Не указано"}
+<b>Фамилия:</b> {user.last_name or "Не указана"}
+<b>Статус:</b> {"Активен" if user.is_active else "Неактивен"}
+<b>Создан:</b> {user.created_at.strftime('%d.%m.%Y %H:%M')}
+<b>Обновлен:</b> {user.updated_at.strftime('%d.%m.%Y %H:%M')}
+
+<b>Подписка:</b> {subscription_status}
+{loyalty_info}
+"""
+        
+        # Кнопки управления пользователем
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎁 Выдать подписку", callback_data=f"admin_grant:{user.telegram_id}")],
+                [
+                    InlineKeyboardButton(text="➕ Добавить 30 дней", callback_data=f"admin_add_days:{user.telegram_id}:30"),
+                    InlineKeyboardButton(text="➖ Убрать 30 дней", callback_data=f"admin_reduce_days:{user.telegram_id}:30")
+                ],
+                [
+                    InlineKeyboardButton(text="⭐ Изменить уровень", callback_data=f"admin_loyalty_set_level_from_user:{user.telegram_id}"),
+                    InlineKeyboardButton(text="🎁 Выдать бонус", callback_data=f"admin_loyalty_grant_from_user:{user.telegram_id}")
+                ],
+                [InlineKeyboardButton(text="📨 Написать пользователю", callback_data=f"admin_message_to:{user.telegram_id}")],
+                [InlineKeyboardButton(text="🚫 Забанить пользователя", callback_data=f"admin_ban_user:{user.telegram_id}")],
+                [InlineKeyboardButton(text="« Назад", callback_data="admin_back")]
+            ]
+        )
+        
+        try:
+            await callback.message.edit_text(user_info, reply_markup=keyboard, parse_mode="HTML")
+        except:
+            await callback.message.answer(user_info, reply_markup=keyboard, parse_mode="HTML")
+        
+        await callback.answer()
+
+
+@admin_router.message(Command("contacted_cancel"), F.chat.type == "private")
 async def cmd_contacted_cancel(message: types.Message):
     """Команда для службы заботы - отметить заявку как 'связались'"""
     # Проверка на админа не обязательна, но можно добавить проверку на службу заботы

@@ -1,7 +1,7 @@
 from sqlalchemy import select, func, update, and_, or_, exists, Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint, case, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta, date
-from database.models import User, Subscription, PaymentLog, PromoCode, UserPromoCode, SubscriptionNotification, MessageTemplate, ScheduledMessage, ScheduledMessageRecipient
+from database.models import User, Subscription, PaymentLog, PromoCode, UserPromoCode, SubscriptionNotification, MessageTemplate, ScheduledMessage, ScheduledMessageRecipient, AutorenewalCancellationRequest
 import random
 import string
 import logging
@@ -327,19 +327,56 @@ async def extend_subscription(db: AsyncSession,
 async def create_payment_log(db: AsyncSession, user_id: int, amount: int, status: str, 
                             subscription_id: int = None, payment_method: str = None, 
                             transaction_id: str = None, details: str = None, 
-                            payment_label: str = None, days: Optional[int] = None):
-    """Создает запись о платеже в логе с дополнительной меткой платежа и количеством дней."""
-    payment_log = PaymentLog(
-        user_id=user_id,
-        subscription_id=subscription_id,
-        amount=amount,
-        status=status,
-        payment_method=payment_method,
-        transaction_id=transaction_id,
-        details=details,
-        payment_label=payment_label,
-        days=days
-    )
+                            payment_label: str = None, days: Optional[int] = None,
+                            payment_datetime: Optional[datetime] = None):
+    """
+    Создает запись о платеже в логе с дополнительной меткой платежа и количеством дней.
+    
+    Args:
+        payment_datetime: Реальное время платежа от платежной системы (если доступно).
+                         Если не указано, используется текущее время.
+    """
+    from datetime import datetime
+    
+    # Используем реальное время платежа, если передано
+    if payment_datetime:
+        # Если время с timezone, конвертируем в naive datetime (SQLite не поддерживает timezone)
+        if payment_datetime.tzinfo is not None:
+            # Конвертируем UTC в локальное время (MSK = UTC+3)
+            try:
+                import pytz
+                msk_tz = pytz.timezone('Europe/Moscow')
+                payment_datetime = payment_datetime.astimezone(msk_tz).replace(tzinfo=None)
+            except ImportError:
+                # Если pytz не установлен, просто убираем timezone
+                payment_datetime = payment_datetime.replace(tzinfo=None)
+        
+        # Создаем объект с явно указанным created_at
+        payment_log = PaymentLog(
+            user_id=user_id,
+            subscription_id=subscription_id,
+            amount=amount,
+            status=status,
+            payment_method=payment_method,
+            transaction_id=transaction_id,
+            details=details,
+            payment_label=payment_label,
+            days=days,
+            created_at=payment_datetime
+        )
+    else:
+        # Используем текущее время (по умолчанию)
+        payment_log = PaymentLog(
+            user_id=user_id,
+            subscription_id=subscription_id,
+            amount=amount,
+            status=status,
+            payment_method=payment_method,
+            transaction_id=transaction_id,
+            details=details,
+            payment_label=payment_label,
+            days=days
+        )
     
     db.add(payment_log)
     await db.commit()
@@ -1023,6 +1060,11 @@ async def send_payment_notification_to_admins(bot, user, payment, subscription, 
     try:
         # Для проверки первого платежа используем специальный запрос
         from sqlalchemy import select, exists, and_
+        from utils.constants import (
+            SUBSCRIPTION_PRICE,
+            SUBSCRIPTION_PRICE_2MONTHS,
+            SUBSCRIPTION_PRICE_3MONTHS
+        )
         
         # Проверяем, есть ли другие успешные платежи у этого пользователя
         is_first_payment = True  # Предполагаем по умолчанию, что это первый платеж
@@ -1050,11 +1092,40 @@ async def send_payment_notification_to_admins(bot, user, payment, subscription, 
             payment_subtitle = "👑 <b>Пользователь продлил подписку</b>"
         
         user_info = f"{user.first_name} {user.last_name or ''} (@{user.username})" if user.username else f"{user.first_name} {user.last_name or ''} (ID: {user.telegram_id})"
+        
+        # Определяем базовую цену по количеству дней
+        days = subscription.renewal_duration_days or payment.days or 30
+        if days <= 30:
+            base_price = SUBSCRIPTION_PRICE
+        elif days <= 60:
+            base_price = SUBSCRIPTION_PRICE_2MONTHS
+        elif days <= 90:
+            base_price = SUBSCRIPTION_PRICE_3MONTHS
+        else:
+            # Для нестандартных периодов вычисляем пропорционально месячной цене
+            base_price = int((days / 30) * SUBSCRIPTION_PRICE)
+        
+        # Получаем информацию о скидке
+        discount_percent = subscription.loyalty_discount_percent or 0
+        if discount_percent == 0 and user.lifetime_discount_percent > 0:
+            discount_percent = user.lifetime_discount_percent
+        
+        final_price = payment.amount
+        
+        # Формируем строку с информацией о цене и скидке
+        if discount_percent > 0 and final_price < base_price:
+            price_info = (
+                f"💵 Цена: <s>{base_price} руб.</s> {final_price} руб.\n"
+                f"💰 Скидка: {discount_percent}% (постоянная скидка лояльности)"
+            )
+        else:
+            price_info = f"💵 Сумма: {final_price} руб."
+        
         admin_notification = (
             f"{payment_title}\n\n"
             f"{payment_subtitle}\n"
             f"👤 Пользователь: {user_info}\n"
-            f"💵 Сумма: {payment.amount} руб.\n"
+            f"{price_info}\n"
             f"📆 Срок действия: до {subscription.end_date.strftime('%d.%m.%Y')}\n"
             f"🆔 ID транзакции: <code>{transaction_id}</code>\n\n"
             f"✅ Подписка успешно активирована!"
@@ -1104,6 +1175,66 @@ async def send_promocode_notification_to_admins(bot, user, promo_code, subscript
             
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений о промокоде администраторам: {e}")
+
+
+async def send_loyalty_benefit_notification_to_admins(bot, user, level: str, code: str, benefit_details: dict = None):
+    """Отправляет уведомление администраторам о выборе бонуса лояльности"""
+    logger = logging.getLogger(__name__)
+    try:
+        user_info = f"{user.first_name} {user.last_name or ''} (@{user.username})" if user.username else f"{user.first_name} {user.last_name or ''} (ID: {user.telegram_id})"
+        
+        # Названия уровней
+        level_names = {
+            'silver': 'Silver Mom ⭐',
+            'gold': 'Gold Mom 🌟',
+            'platinum': 'Platinum Mom 💍'
+        }
+        level_name = level_names.get(level, level)
+        
+        # Описание бонусов
+        benefit_descriptions = {
+            'days_7': '🎁 +7 дней доступа к клубу',
+            'days_14': '🎁 +14 дней доступа к клубу',
+            'days_30_gift': '🎁 +30 дней доступа + подарок',
+            'discount_5': '💰 Постоянная скидка 5%',
+            'discount_10': '💰 Постоянная скидка 10%',
+            'discount_15_forever': '💎 Постоянная скидка 15%'
+        }
+        
+        benefit_description = benefit_descriptions.get(code, f'Бонус: {code}')
+        
+        # Дополнительная информация
+        details_text = ""
+        if benefit_details:
+            if 'days' in benefit_details:
+                details_text = f"\n📅 Добавлено дней: {benefit_details['days']}"
+            if 'discount_percent' in benefit_details:
+                details_text = f"\n💰 Размер скидки: {benefit_details['discount_percent']}%"
+        
+        admin_notification = (
+            f"🎁 <b>Выбор бонуса лояльности!</b>\n\n"
+            f"👤 Пользователь: {user_info}\n"
+            f"⭐ Уровень: {level_name}\n"
+            f"🎁 Выбранный бонус: {benefit_description}{details_text}\n\n"
+            f"✅ Бонус успешно применён!"
+        )
+        
+        # Отправляем сообщение всем администраторам
+        if ADMIN_IDS:
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        admin_notification,
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке уведомления о бонусе лояльности админу {admin_id}: {e}")
+        else:
+            logger.warning("Список ADMIN_IDS пуст, уведомление о бонусе лояльности не отправлено.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомлений о бонусе лояльности администраторам: {e}")
 
 async def add_user_to_club_channel(bot, user_id: int) -> None:
     """Добавляет пользователя в закрытый канал/группу"""
@@ -1407,7 +1538,7 @@ async def disable_user_auto_renewal(db: AsyncSession, user_id: int) -> bool:
     active_sub = await get_active_subscription(db, user_id)
     if active_sub:
         logger.info(f"Найдена активная подписка ID {active_sub.id} для пользователя {user_id}")
-        
+
         subscription_reset_query = (
             update(Subscription)
             .where(Subscription.id == active_sub.id)
@@ -1452,7 +1583,7 @@ async def enable_user_auto_renewal(db: AsyncSession, user_id: int) -> bool:
         .values(is_recurring_active=True)
     )
     await db.execute(user_update_query)
-    
+
     logger.info(f"Автопродление включено для пользователя ID {user_id}. is_recurring_active=True.")
     await db.commit()
     return True
@@ -1754,7 +1885,7 @@ async def get_users_for_migration_notification(db: AsyncSession, notification_wi
     """
     Возвращает пользователей, которым нужно отправить уведомление о смене платежной системы.
     ВАЖНО: В режиме "возврат на ЮКасy" отправляем ВСЕМ пользователям с активной подпиской!
-    
+
     Returns:
         List[User]: Список пользователей для уведомления
     """
@@ -1918,3 +2049,184 @@ async def mark_migration_notification_sent(db: AsyncSession, user_id: int, notif
         logger.error(f"Ошибка при обновлении статуса уведомления для пользователя {user_id}: {e}")
         await db.rollback()
         return False
+
+
+# Функции для работы с заявками на отмену автопродления
+
+async def create_autorenewal_cancellation_request(db: AsyncSession, user_id: int) -> AutorenewalCancellationRequest:
+    """Создает заявку на отмену автопродления"""
+    request = AutorenewalCancellationRequest(
+        user_id=user_id,
+        status='pending'
+    )
+    db.add(request)
+    await db.commit()
+    await db.refresh(request)
+    logger.info(f"Создана заявка на отмену автопродления ID {request.id} для пользователя {user_id}")
+    return request
+
+async def get_pending_cancellation_requests(db: AsyncSession) -> List[AutorenewalCancellationRequest]:
+    """Получает все ожидающие заявки"""
+    query = select(AutorenewalCancellationRequest).where(
+        AutorenewalCancellationRequest.status == 'pending'
+    ).order_by(AutorenewalCancellationRequest.created_at)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+async def get_cancellation_request_by_id(db: AsyncSession, request_id: int) -> Optional[AutorenewalCancellationRequest]:
+    """Получает заявку по ID"""
+    query = select(AutorenewalCancellationRequest).where(
+        AutorenewalCancellationRequest.id == request_id
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+async def get_all_cancellation_requests(db: AsyncSession, status: Optional[str] = None, limit: int = 50) -> List[AutorenewalCancellationRequest]:
+    """Получает все заявки (или с фильтром по статусу)"""
+    query = select(AutorenewalCancellationRequest)
+    if status:
+        query = query.where(AutorenewalCancellationRequest.status == status)
+    query = query.order_by(AutorenewalCancellationRequest.created_at.desc()).limit(limit)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+async def get_cancellation_requests_stats(db: AsyncSession) -> dict:
+    """Получает статистику по заявкам"""
+    from sqlalchemy import func
+    
+    # Общее количество
+    total_query = select(func.count()).select_from(AutorenewalCancellationRequest)
+    total_result = await db.execute(total_query)
+    total = total_result.scalar() or 0
+    
+    # По статусам
+    stats_query = select(
+        AutorenewalCancellationRequest.status,
+        func.count(AutorenewalCancellationRequest.id).label('count')
+    ).group_by(AutorenewalCancellationRequest.status)
+    
+    stats_result = await db.execute(stats_query)
+    stats = {row.status: row.count for row in stats_result.all()}
+    
+    return {
+        'total': total,
+        'pending': stats.get('pending', 0),
+        'contacted': stats.get('contacted', 0),
+        'approved': stats.get('approved', 0),
+        'rejected': stats.get('rejected', 0)
+    }
+
+async def update_cancellation_request_status(
+    db: AsyncSession, 
+    request_id: int, 
+    status: str, 
+    reviewed_by: Optional[int] = None,
+    admin_notes: Optional[str] = None
+) -> bool:
+    """Обновляет статус заявки"""
+    query = (
+        update(AutorenewalCancellationRequest)
+        .where(AutorenewalCancellationRequest.id == request_id)
+        .values(
+            status=status,
+            reviewed_at=datetime.now(),
+            reviewed_by=reviewed_by,
+            admin_notes=admin_notes
+        )
+    )
+    await db.execute(query)
+    await db.commit()
+    logger.info(f"Обновлен статус заявки {request_id} на '{status}'")
+    return True
+
+async def mark_cancellation_request_contacted(db: AsyncSession, request_id: int) -> bool:
+    """Отмечает заявку как 'связались с пользователем'"""
+    query = (
+        update(AutorenewalCancellationRequest)
+        .where(AutorenewalCancellationRequest.id == request_id)
+        .values(
+            status='contacted',
+            contacted_at=datetime.now()
+        )
+    )
+    await db.execute(query)
+    await db.commit()
+    logger.info(f"Заявка {request_id} отмечена как 'связались с пользователем'")
+    return True
+
+async def send_cancellation_request_notifications(bot, user, request_id: int):
+    """Отправляет уведомления админам и службе заботы о новой заявке на отмену автопродления"""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from database.config import AsyncSessionLocal
+    
+    logger = logging.getLogger(__name__)
+    
+    try:
+        async with AsyncSessionLocal() as session:
+            active_sub = await get_active_subscription(session, user.id)
+            
+            user_info = f"{user.first_name} {user.last_name or ''} (@{user.username})" if user.username else f"{user.first_name} {user.last_name or ''} (ID: {user.telegram_id})"
+            
+            subscription_info = ""
+            if active_sub:
+                end_date = active_sub.end_date.strftime('%d.%m.%Y')
+                subscription_info = f"\n📅 Подписка до: {end_date}"
+            
+            # Уведомление админам
+            admin_notification = (
+                f"🚫 <b>Заявка на отмену автопродления</b>\n\n"
+                f"👤 Пользователь: {user_info}\n"
+                f"🆔 Telegram ID: <code>{user.telegram_id}</code>\n"
+                f"📱 Телефон: {user.phone or 'не указан'}\n"
+                f"📧 Email: {user.email or 'не указан'}{subscription_info}\n"
+                f"🆔 ID заявки: <code>{request_id}</code>\n\n"
+                f"⏳ Требуется обработать заявку"
+            )
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_cancel_renewal_{request_id}")],
+                [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_cancel_renewal_{request_id}")],
+                [InlineKeyboardButton(text="📋 Список заявок", callback_data="admin_pending_cancellations")]
+            ])
+            
+            # Отправляем админам
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        admin_notification,
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке уведомления админу {admin_id}: {e}")
+            
+            # Уведомление службе заботы (@momsclubsupport)
+            support_username = "momsclubsupport"
+            support_user = await get_user_by_username(session, support_username)
+            
+            if support_user:
+                support_message = (
+                    f"🛟 <b>Новая заявка на отмену автопродления</b>\n\n"
+                    f"👤 Пользователь: {user_info}\n"
+                    f"🆔 Telegram ID: <code>{user.telegram_id}</code>\n"
+                    f"📱 Телефон: {user.phone or 'не указан'}\n"
+                    f"📧 Email: {user.email or 'не указан'}{subscription_info}\n\n"
+                    f"💬 <b>Пожалуйста, свяжитесь с пользователем, узнайте причину отмены и попробуйте отработать возражения.</b>\n\n"
+                    f"После контакта используйте команду:\n"
+                    f"<code>/contacted_cancel {request_id}</code>"
+                )
+                
+                try:
+                    await bot.send_message(
+                        support_user.telegram_id,
+                        support_message,
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке уведомления службе заботы: {e}")
+            else:
+                logger.warning(f"Служба заботы (@{support_username}) не найдена в базе!")
+                
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомлений о заявке: {e}", exc_info=True)

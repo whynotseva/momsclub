@@ -122,7 +122,7 @@ def convert_custom_to_html(text):
 
 # ------------------ ИНДИВИДУАЛЬНЫЕ СООБЩЕНИЯ ------------------
 
-@message_router.callback_query(F.data == "admin_direct_message")
+@message_router.callback_query(F.data == "admin_direct_message_DISABLED")
 async def process_admin_direct_message(callback: CallbackQuery, state: FSMContext):
     """Обработчик для начала процесса отправки индивидуального сообщения пользователю"""
     if callback.from_user.id not in ADMIN_IDS:
@@ -159,7 +159,7 @@ async def process_admin_direct_message(callback: CallbackQuery, state: FSMContex
     
     await callback.answer()
 
-@message_router.callback_query(F.data.startswith("admin_message_to:"))
+@message_router.callback_query(F.data.startswith("admin_message_to_DISABLED:"))
 async def process_admin_message_to(callback: CallbackQuery, state: FSMContext):
     """Обработчик для начала отправки сообщения конкретному пользователю"""
     if callback.from_user.id not in ADMIN_IDS:
@@ -632,7 +632,7 @@ async def send_direct_message(callback: CallbackQuery, state: FSMContext):
 
 # ------------------ ШАБЛОНЫ СООБЩЕНИЙ ------------------
 
-@message_router.callback_query(F.data == "admin_message_templates")
+@message_router.callback_query(F.data == "admin_message_templates_DISABLED")
 async def process_message_templates(callback: CallbackQuery, state: FSMContext):
     """Обработчик для управления шаблонами сообщений"""
     if callback.from_user.id not in ADMIN_IDS:
@@ -1340,4 +1340,4 @@ async def process_use_template(callback: CallbackQuery, state: FSMContext):
 # Функция для регистрации обработчиков
 def register_message_handlers(dp):
     """Регистрирует обработчики сообщений"""
-    dp.include_router(message_router) 
+    dp.include_router(message_router)

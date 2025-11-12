@@ -11,3 +11,5 @@ fastapi
 uvicorn
 starlette
 yookassa
+slowapi
+redis

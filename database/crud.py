@@ -1,7 +1,7 @@
 from sqlalchemy import select, func, update, and_, or_, exists, Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint, case, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta, date
-from database.models import User, Subscription, PaymentLog, PromoCode, UserPromoCode, SubscriptionNotification, MessageTemplate, ScheduledMessage, ScheduledMessageRecipient, AutorenewalCancellationRequest
+from database.models import User, Subscription, PaymentLog, PromoCode, UserPromoCode, SubscriptionNotification, MessageTemplate, ScheduledMessage, ScheduledMessageRecipient, AutorenewalCancellationRequest, UserBadge, LoyaltyEvent, MigrationNotification
 import random
 import string
 import logging
@@ -28,17 +28,21 @@ async def get_user_by_id(db: AsyncSession, user_id: int):
 
 async def create_user(db: AsyncSession, telegram_id: int, username: str = None, first_name: str = None, last_name: str = None, phone: str = None):
     """Создает нового пользователя"""
+    now = datetime.now()
     user = User(
         telegram_id=telegram_id,
         username=username,
         first_name=first_name,
         last_name=last_name,
-        phone=phone
+        phone=phone,
+        created_at=now,  # Явно устанавливаем created_at при создании
+        updated_at=now   # Явно устанавливаем updated_at при создании
     )
     
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    logger.info(f"Создан новый пользователь: telegram_id={telegram_id}, username={username}, created_at={now}")
     return user
 
 async def sync_user_data(db: AsyncSession, user: User, username: str = None, first_name: str = None, last_name: str = None, phone: str = None):
@@ -391,12 +395,16 @@ async def get_total_users_count(db: AsyncSession):
     return result.scalar_one_or_none() or 0
 
 async def get_active_subscriptions_count(db: AsyncSession):
-    """Получает количество активных подписок"""
+    """Получает количество активных подписок (исключая пожизненные)"""
     now = datetime.now()
+    # Пожизненные подписки имеют end_date в далеком будущем (36500 дней = ~100 лет)
+    # Исключаем их из подсчета активных подписок
+    lifetime_threshold = datetime(2099, 1, 1)  # Порог для пожизненных подписок
     query = select(func.count(Subscription.id)).where(
         and_(
             Subscription.is_active == True,
-            Subscription.end_date > now
+            Subscription.end_date > now,
+            Subscription.end_date < lifetime_threshold  # Исключаем пожизненные
         )
     )
     result = await db.execute(query)
@@ -952,6 +960,52 @@ async def get_payment_by_id(db: AsyncSession, payment_db_id: int) -> Optional[Pa
     )
     return result.scalars().first()
 
+async def get_user_payment_history(db: AsyncSession, user_id: int, limit: int = 20, only_confirmed: bool = True) -> List[PaymentLog]:
+    """
+    Получает историю платежей пользователя, отсортированную по дате (новые первыми).
+    
+    Args:
+        db: Сессия БД
+        user_id: ID пользователя в БД
+        limit: Максимальное количество записей (по умолчанию 20)
+        only_confirmed: Показывать только подтвержденные успешные платежи (по умолчанию True)
+                       Если False, покажет все платежи включая pending и failed
+        
+    Returns:
+        Список записей PaymentLog
+    """
+    # Фильтруем только успешные и подтвержденные платежи (реальные платежи)
+    if only_confirmed:
+        query = select(PaymentLog).where(
+            and_(
+                PaymentLog.user_id == user_id,
+                PaymentLog.status == 'success',
+                PaymentLog.is_confirmed == True,
+                # Исключаем тестовые платежи (где в details есть "ТЕСТ", "Тест", "ТЕСТОВЫЙ", "Тестовый" и т.д.)
+                or_(
+                    PaymentLog.details.is_(None),
+                    and_(
+                        PaymentLog.details.notlike('%ТЕСТ%'),
+                        PaymentLog.details.notlike('%Тест%'),
+                        PaymentLog.details.notlike('%тест%'),
+                        PaymentLog.details.notlike('%ТЕСТОВЫЙ%'),
+                        PaymentLog.details.notlike('%Тестовый%'),
+                        PaymentLog.details.notlike('%тестовый%'),
+                        PaymentLog.details.notlike('%TEST%'),
+                        PaymentLog.details.notlike('%Test%'),
+                        PaymentLog.details.notlike('%test%')
+                    )
+                )
+            )
+        )
+    else:
+        query = select(PaymentLog).where(PaymentLog.user_id == user_id)
+    
+    query = query.order_by(PaymentLog.created_at.desc()).limit(limit)
+    
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
 async def get_payment_by_prodamus_order_id(db: AsyncSession, prodamus_order_id: str) -> Optional[PaymentLog]:
     """Получает запись о платеже по order_id от Prodamus"""
     result = await db.execute(
@@ -1054,6 +1108,22 @@ async def send_referral_bonus_notification(bot, user_id: int, referred_name: str
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомления о бонусе: {e}")
 
+async def send_referee_bonus_notification(bot, user_id: int, referrer_name: str, bonus_days: int) -> None:
+    """Отправляет уведомление приглашенному пользователю о получении реферального бонуса"""
+    logger = logging.getLogger(__name__)
+    try:
+        await bot.send_message(
+            user_id,
+            (
+                f"🎁 Вам начислен реферальный бонус!\n\n"
+                f"Вы были приглашены пользователем {referrer_name}, и ваша подписка автоматически продлена на {bonus_days} дней.\n\n"
+                f"Спасибо, что с нами в Mom's Club! 💖"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомления о бонусе рефералу: {e}")
+
 async def send_payment_notification_to_admins(bot, user, payment, subscription, transaction_id):
     """Отправляет уведомление администраторам о новой оплате"""
     logger = logging.getLogger(__name__)
@@ -1121,24 +1191,68 @@ async def send_payment_notification_to_admins(bot, user, payment, subscription, 
         else:
             price_info = f"💵 Сумма: {final_price} руб."
         
+        # Добавляем информацию о реферале, если есть
+        referral_info_line = ""
+        if getattr(user, "referrer_id", None):
+            try:
+                # Получаем данные реферера
+                async for db in get_db():
+                    referrer = await get_user_by_id(db, user.referrer_id)
+                    break
+                if referrer:
+                    ref_display = f"@{referrer.username}" if referrer.username else f"ID: {referrer.telegram_id}"
+                    referral_info_line = f"🤝 Реферал: пригласил {ref_display}\n"
+            except Exception as e:
+                logger.warning(f"Не удалось получить данные реферера для admin push: {e}")
+
+        # Маркер реферальной оплаты, если это первый платеж реферала
+        referral_marker_line = ""
+        if getattr(user, "referrer_id", None) and is_first_payment:
+            referral_marker_line = "🤝 Оплата по реферальной программе\n"
+
         admin_notification = (
             f"{payment_title}\n\n"
             f"{payment_subtitle}\n"
+            f"{referral_marker_line}"
             f"👤 Пользователь: {user_info}\n"
+            f"{referral_info_line}"
             f"{price_info}\n"
             f"📆 Срок действия: до {subscription.end_date.strftime('%d.%m.%Y')}\n"
             f"🆔 ID транзакции: <code>{transaction_id}</code>\n\n"
             f"✅ Подписка успешно активирована!"
         )
         
-        # Отправляем сообщение всем администраторам
-        for admin_id in ADMIN_IDS:
+        # Отправляем сообщение только тем администраторам, которые должны получать уведомления
+        from utils.admin_permissions import can_receive_payment_notifications
+        from database.crud import get_user_by_telegram_id
+        
+        # Получаем всех админов из базы (по группам и по старым ADMIN_IDS)
+        admin_telegram_ids = set(ADMIN_IDS)  # Старые админы из константы
+        
+        # Добавляем админов из базы по группам
+        from utils.constants import ADMIN_GROUP_CREATOR, ADMIN_GROUP_DEVELOPER, ADMIN_GROUP_CURATOR
+        async for db in get_db():
+            query = select(User).where(
+                User.admin_group.in_([ADMIN_GROUP_CREATOR, ADMIN_GROUP_DEVELOPER, ADMIN_GROUP_CURATOR])
+            )
+            result = await db.execute(query)
+            admin_users = result.scalars().all()
+            for admin_user in admin_users:
+                admin_telegram_ids.add(admin_user.telegram_id)
+            break
+        
+        # Отправляем уведомления только тем, кто должен их получать
+        for admin_id in admin_telegram_ids:
             try:
-                await bot.send_message(
-                    admin_id,
-                    admin_notification,
-                    parse_mode="HTML"
-                )
+                async for db in get_db():
+                    admin_user = await get_user_by_telegram_id(db, admin_id)
+                    if admin_user and can_receive_payment_notifications(admin_user):
+                        await bot.send_message(
+                            admin_id,
+                            admin_notification,
+                            parse_mode="HTML"
+                        )
+                    break
             except Exception as e:
                 logger.error(f"Ошибка при отправке уведомления администратору {admin_id}: {e}")
     except Exception as e:
@@ -1159,19 +1273,38 @@ async def send_promocode_notification_to_admins(bot, user, promo_code, subscript
             f"✅ Подписка успешно обновлена/создана!"
         )
         
-        # Отправляем сообщение всем администраторам
-        if ADMIN_IDS:
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(
-                        admin_id,
-                        admin_notification,
-                        parse_mode="HTML"
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка при отправке уведомления о промокоде админу {admin_id}: {e}")
-        else:
-            logger.warning("Список ADMIN_IDS пуст, уведомление о промокоде не отправлено.")
+        # Отправляем уведомления только тем администраторам, которые должны их получать
+        from utils.admin_permissions import can_receive_payment_notifications
+        from utils.constants import ADMIN_GROUP_CREATOR, ADMIN_GROUP_DEVELOPER, ADMIN_GROUP_CURATOR
+        from sqlalchemy import select
+        
+        admin_telegram_ids = set(ADMIN_IDS)  # Старые админы из константы
+        
+        # Добавляем админов из базы по группам
+        async for db in get_db():
+            query = select(User).where(
+                User.admin_group.in_([ADMIN_GROUP_CREATOR, ADMIN_GROUP_DEVELOPER, ADMIN_GROUP_CURATOR])
+            )
+            result = await db.execute(query)
+            admin_users = result.scalars().all()
+            for admin_user in admin_users:
+                admin_telegram_ids.add(admin_user.telegram_id)
+            break
+        
+        # Отправляем уведомления только тем, кто должен их получать
+        for admin_id in admin_telegram_ids:
+            try:
+                async for db in get_db():
+                    admin_user = await get_user_by_telegram_id(db, admin_id)
+                    if admin_user and can_receive_payment_notifications(admin_user):
+                        await bot.send_message(
+                            admin_id,
+                            admin_notification,
+                            parse_mode="HTML"
+                        )
+                    break
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомления о промокоде админу {admin_id}: {e}")
             
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений о промокоде администраторам: {e}")
@@ -1219,19 +1352,38 @@ async def send_loyalty_benefit_notification_to_admins(bot, user, level: str, cod
             f"✅ Бонус успешно применён!"
         )
         
-        # Отправляем сообщение всем администраторам
-        if ADMIN_IDS:
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(
-                        admin_id,
-                        admin_notification,
-                        parse_mode="HTML"
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка при отправке уведомления о бонусе лояльности админу {admin_id}: {e}")
-        else:
-            logger.warning("Список ADMIN_IDS пуст, уведомление о бонусе лояльности не отправлено.")
+        # Отправляем уведомления только тем администраторам, которые должны их получать
+        from utils.admin_permissions import can_receive_payment_notifications
+        from utils.constants import ADMIN_GROUP_CREATOR, ADMIN_GROUP_DEVELOPER, ADMIN_GROUP_CURATOR
+        from sqlalchemy import select
+        
+        admin_telegram_ids = set(ADMIN_IDS)  # Старые админы из константы
+        
+        # Добавляем админов из базы по группам
+        async for db in get_db():
+            query = select(User).where(
+                User.admin_group.in_([ADMIN_GROUP_CREATOR, ADMIN_GROUP_DEVELOPER, ADMIN_GROUP_CURATOR])
+            )
+            result = await db.execute(query)
+            admin_users = result.scalars().all()
+            for admin_user in admin_users:
+                admin_telegram_ids.add(admin_user.telegram_id)
+            break
+        
+        # Отправляем уведомления только тем, кто должен их получать
+        for admin_id in admin_telegram_ids:
+            try:
+                async for db in get_db():
+                    admin_user = await get_user_by_telegram_id(db, admin_id)
+                    if admin_user and can_receive_payment_notifications(admin_user):
+                        await bot.send_message(
+                            admin_id,
+                            admin_notification,
+                            parse_mode="HTML"
+                        )
+                    break
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомления о бонусе лояльности админу {admin_id}: {e}")
             
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений о бонусе лояльности администраторам: {e}")
@@ -1505,6 +1657,528 @@ async def create_subscription_notification(db: AsyncSession, subscription_id: in
     db.add(notification)
     await db.commit()
     return notification
+
+async def get_users_with_expired_subscriptions_for_reminder(db: AsyncSession, days_after_expiration: int = 3):
+    """
+    Получает пользователей, у которых подписка истекла {days_after_expiration} дней назад
+    и для которых еще не отправлялось уведомление "мы скучаем"
+    
+    Args:
+        db: Сессия БД
+        days_after_expiration: Количество дней после истечения подписки (по умолчанию 3)
+        
+    Returns:
+        Список кортежей (user, subscription) для пользователей, которым нужно отправить уведомление
+    """
+    from sqlalchemy import func
+    now = datetime.now()
+    expiration_date = now - timedelta(days=days_after_expiration)
+    
+    # Получаем последние истекшие подписки для каждого пользователя
+    subquery = (
+        select(
+            Subscription.user_id,
+            func.max(Subscription.end_date).label('max_end_date')
+        )
+        .group_by(Subscription.user_id)
+        .having(
+            and_(
+                func.max(Subscription.end_date) <= datetime(2099, 1, 1),  # Не берем безлимитные
+                func.max(Subscription.end_date) <= expiration_date,  # Истекли минимум N дней назад
+                func.max(Subscription.end_date) >= expiration_date - timedelta(days=1)  # Но не больше N+1 дней
+            )
+        )
+    ).subquery()
+    
+    # Получаем полные данные подписок
+    query = (
+        select(User, Subscription)
+        .join(Subscription, User.id == Subscription.user_id)
+        .join(
+            subquery,
+            and_(
+                Subscription.user_id == subquery.c.user_id,
+                Subscription.end_date == subquery.c.max_end_date
+            )
+        )
+        .where(
+            and_(
+                Subscription.is_active == False,
+                User.is_blocked == False  # Не заблокировали бота
+            )
+        )
+    )
+    
+    result = await db.execute(query)
+    users_with_subs = result.all()
+    
+    # Фильтруем тех, кому еще не отправлялось уведомление "мы скучаем"
+    filtered = []
+    for user, subscription in users_with_subs:
+        notification = await get_subscription_notification(db, subscription.id, 'expired_reminder_3days')
+        if not notification:
+            filtered.append((user, subscription))
+    
+    return filtered
+
+async def get_users_for_milestone_notifications(db: AsyncSession):
+    """
+    Получает пользователей, которые достигли milestone-дат (100, 180, 365 дней стажа)
+    и для которых еще не отправлялись соответствующие уведомления
+    
+    Returns:
+        Список кортежей (user, milestone_days) для пользователей, которым нужно отправить уведомление
+    """
+    from loyalty.levels import calc_tenure_days
+    
+    # Получаем всех пользователей с активными подписками
+    query = select(User).where(
+        and_(
+            User.first_payment_date.isnot(None),
+            User.is_blocked == False
+        )
+    )
+    result = await db.execute(query)
+    users = result.scalars().all()
+    
+    milestones = [100, 180, 365]
+    users_for_notification = []
+    
+    for user in users:
+        tenure_days = await calc_tenure_days(db, user)
+        
+        # Проверяем, достиг ли пользователь какого-либо milestone
+        for milestone in milestones:
+            # Проверяем, что стаж в диапазоне milestone ± 1 день (чтобы не пропустить)
+            if milestone - 1 <= tenure_days <= milestone + 1:
+                # Проверяем, отправлялось ли уже уведомление для этого milestone
+                notification_type = f'milestone_{milestone}_days'
+                
+                # Получаем последнюю активную подписку пользователя
+                from database.models import Subscription
+                sub_query = select(Subscription).where(
+                    and_(
+                        Subscription.user_id == user.id,
+                        Subscription.is_active == True
+                    )
+                ).order_by(Subscription.end_date.desc()).limit(1)
+                sub_result = await db.execute(sub_query)
+                subscription = sub_result.scalar_one_or_none()
+                
+                if subscription:
+                    notification = await get_subscription_notification(db, subscription.id, notification_type)
+                    if not notification:
+                        users_for_notification.append((user, milestone))
+                        break  # Отправляем только одно уведомление за раз
+    
+    return users_for_notification
+
+# ===== Функции для работы с badges (достижениями) =====
+
+async def get_user_badges(db: AsyncSession, user_id: int) -> List[UserBadge]:
+    """
+    Получает все badges пользователя
+    
+    Args:
+        db: Сессия БД
+        user_id: ID пользователя
+        
+    Returns:
+        Список badges пользователя
+    """
+    query = select(UserBadge).where(
+        UserBadge.user_id == user_id
+    ).order_by(UserBadge.earned_at.desc())
+    
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+async def has_user_badge(db: AsyncSession, user_id: int, badge_type: str) -> bool:
+    """
+    Проверяет, есть ли у пользователя badge указанного типа
+    
+    Args:
+        db: Сессия БД
+        user_id: ID пользователя
+        badge_type: Тип badge ('first_payment', 'referral_1', 'referral_5', 'year_in_club')
+        
+    Returns:
+        True если badge есть, иначе False
+    """
+    query = select(UserBadge).where(
+        and_(
+            UserBadge.user_id == user_id,
+            UserBadge.badge_type == badge_type
+        )
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none() is not None
+
+
+async def grant_user_badge(db: AsyncSession, user_id: int, badge_type: str, from_admin: bool = False, admin_id: Optional[int] = None) -> Optional[UserBadge]:
+    """
+    Выдает badge пользователю (если его еще нет)
+    
+    Args:
+        db: Сессия БД
+        user_id: ID пользователя
+        badge_type: Тип badge
+        from_admin: Выдан ли badge администратором
+        admin_id: ID администратора, который выдал badge (если from_admin=True)
+        
+    Returns:
+        UserBadge если badge был выдан, None если уже был
+    """
+    # Проверяем, есть ли уже такой badge
+    if await has_user_badge(db, user_id, badge_type):
+        return None
+    
+    # Создаем новый badge
+    badge = UserBadge(
+        user_id=user_id,
+        badge_type=badge_type
+    )
+    db.add(badge)
+    await db.commit()
+    await db.refresh(badge)
+    
+    logger.info(f"Выдан badge '{badge_type}' пользователю {user_id}" + (f" администратором {admin_id}" if from_admin else ""))
+    return badge
+
+
+async def revoke_user_badge(db: AsyncSession, user_id: int, badge_type: str, admin_id: Optional[int] = None) -> bool:
+    """
+    Удаляет badge у пользователя
+    
+    Args:
+        db: Сессия БД
+        user_id: ID пользователя
+        badge_type: Тип badge для удаления
+        admin_id: ID администратора, который удалил badge
+        
+    Returns:
+        True если badge был удален, False если его не было
+    """
+    query = select(UserBadge).where(
+        and_(
+            UserBadge.user_id == user_id,
+            UserBadge.badge_type == badge_type
+        )
+    )
+    result = await db.execute(query)
+    badge = result.scalar_one_or_none()
+    
+    if badge:
+        await db.delete(badge)
+        await db.commit()
+        logger.info(f"Удален badge '{badge_type}' у пользователя {user_id}" + (f" администратором {admin_id}" if admin_id else ""))
+        return True
+    
+    logger.warning(f"Попытка удалить несуществующий badge '{badge_type}' у пользователя {user_id}")
+    return False
+
+
+async def send_badge_notification(bot, user: User, badge_type: str, from_admin: bool = False) -> bool:
+    """
+    Отправляет уведомление пользователю о получении badge
+    
+    Args:
+        bot: Объект бота
+        user: Объект пользователя
+        badge_type: Тип badge
+        from_admin: Выдан ли badge администратором
+        
+    Returns:
+        True если уведомление отправлено, False если ошибка
+    """
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    badge_messages = {
+        'first_payment': (
+            "💳 *Поздравляю, красотка\\!*\n\n"
+            "Ты получила достижение *«Первая оплата»*\\!\n\n"
+            "Это твой первый шаг в Mom's Club, и мы рады, что ты с нами 💖\n\n"
+            "Теперь тебя ждут еще больше возможностей и бонусов\\. Желаю тебе получать максимум от нашего клуба\\! 🩷"
+        ),
+        'referral_1': (
+            "🤝 *Ура, красотка\\!*\n\n"
+            "Ты получила достижение *«Пригласила друга»*\\!\n\n"
+            "Спасибо, что делишься Mom's Club с подругами\\! Это значит, что тебе действительно нравится то, что мы делаем 💕\n\n"
+            "Продолжай приглашать друзей — за каждое приглашение тебя ждут бонусы\\! ✨"
+        ),
+        'referral_5': (
+            "🌟 *Красотка, ты просто звезда\\!*\n\n"
+            "Ты получила достижение *«Пригласила 5 друзей»*\\!\n\n"
+            "5 подруг уже с нами благодаря тебе\\! Это невероятно, и мы очень ценим твою поддержку 🤍\n\n"
+            "Ты настоящий амбассадор Mom's Club\\! Продолжай в том же духе 💖"
+        ),
+        'referral_10': (
+            "✨ *Красотка, ты просто невероятна\\!*\n\n"
+            "Ты получила достижение *«Пригласила 10 друзей»*\\!\n\n"
+            "10 подруг уже в Mom's Club благодаря тебе\\! Это настоящий подвиг, и мы бесконечно благодарны за твою поддержку 💎\n\n"
+            "Ты — настоящий лидер нашего сообщества\\! 🏆"
+        ),
+        'month_in_club': (
+            "📅 *Красотка, поздравляю\\!*\n\n"
+            "Ты получила достижение *«Месяц в клубе»*\\!\n\n"
+            "Ты с нами уже целый месяц\\! За это время ты стала частью нашего теплого сообщества 💖\n\n"
+            "Спасибо, что остаешься с нами\\. Впереди еще столько интересного\\! ✨"
+        ),
+        'half_year_in_club': (
+            "💫 *Красотка, это невероятно\\!*\n\n"
+            "Ты получила достижение *«Полгода в клубе»*\\!\n\n"
+            "Полгода вместе — это уже серьезно\\! Ты настоящая часть нашей семьи, и мы очень ценим тебя 🤍\n\n"
+            "Спасибо за твою верность и поддержку\\. Ты — наша звезда\\! 🌟"
+        ),
+        'year_in_club': (
+            "🏆 *КРАСОТКА, ЭТО НЕВЕРОЯТНО\\!*\n\n"
+            "Ты получила достижение *«Год в клубе»*\\!\n\n"
+            "Целый год вместе\\! Ты прошла с нами весь путь, и мы бесконечно благодарны за твою верность 💎\n\n"
+            "Ты — настоящая легенда Mom's Club\\! Спасибо, что остаешься с нами\\. Мы любим тебя\\! 💖"
+        ),
+        'loyal_customer': (
+            "💎 *Красотка, ты верный друг\\!*\n\n"
+            "Ты получила достижение *«Верный клиент»*\\!\n\n"
+            "5\\+ успешных платежей — это говорит о твоей преданности Mom's Club\\! Мы очень ценим таких участников, как ты 🤍\n\n"
+            "Спасибо за твое доверие и поддержку\\. Ты — наша опора\\! ✨"
+        ),
+        'platinum_customer': (
+            "👑 *Красотка, ты платиновая\\!*\n\n"
+            "Ты получила достижение *«Платиновый клиент»*\\!\n\n"
+            "10\\+ успешных платежей — это настоящий рекорд\\! Ты одна из самых преданных участниц нашего клуба 💎\n\n"
+            "Мы бесконечно благодарны за твою поддержку\\. Ты — наша королева\\! 🏆"
+        ),
+        'active_member': (
+            "🔥 *Красотка, ты активная\\!*\n\n"
+            "Ты получила достижение *«Активный участник»*\\!\n\n"
+            "Подписка продлевалась 3\\+ раза — это значит, что Mom's Club стал частью твоей жизни\\! Мы рады видеть тебя снова и снова 💖\n\n"
+            "Спасибо за твою активность и преданность\\. Ты — наша энергия\\! ✨"
+        ),
+        'birthday_gift': (
+            "🎂 *С днем рождения, красотка\\!*\n\n"
+            "Ты получила достижение *«День рождения»*\\!\n\n"
+            "Мы помним о твоем особом дне и рады поздравить тебя\\! Пусть этот год будет наполнен счастьем, любовью и вдохновением 💕\n\n"
+            "Спасибо, что отмечаешь свой день вместе с нами\\. Мы любим тебя\\! 🩷"
+        ),
+        # Специальные badges (только от админов)
+        'community_helper': (
+            "💝 *Красотка, ты особенная\\!*\n\n"
+            "Ты получила достижение *«Помощь сообществу»*\\!\n\n"
+            "Твой вклад в развитие Mom's Club не остался незамеченным\\. Ты помогаешь создавать то теплое и поддерживающее пространство, которое мы все так любим 💖\n\n"
+            "Спасибо за твою активность и заботу о других\\. Ты делаешь наш клуб лучше\\! ✨"
+        ),
+        'inspiration': (
+            "✨ *Красотка, ты вдохновляешь\\!*\n\n"
+            "Ты получила достижение *«Источник вдохновения»*\\!\n\n"
+            "Твоя энергия, идеи и позитив вдохновляют других участниц нашего клуба\\. Ты показываешь, что возможно, когда есть поддержка и вера в себя 💫\n\n"
+            "Продолжай делиться своим светом\\. Ты — настоящий пример для других\\! 🌟"
+        ),
+        'early_supporter': (
+            "🌱 *Красотка, ты первопроходец\\!*\n\n"
+            "Ты получила достижение *«Первопроходец»*\\!\n\n"
+            "Ты была с нами с самого начала, когда Mom's Club только начинал свой путь\\. Твоя вера в нас и поддержка помогли нам стать тем сообществом, которым мы являемся сегодня 🌿\n\n"
+            "Спасибо за то, что поверила в нас первая\\. Ты — часть нашей истории\\! 💚"
+        ),
+        'ambassador': (
+            "🌟 *Красотка, ты амбассадор\\!*\n\n"
+            "Ты получила достижение *«Амбассадор клуба»*\\!\n\n"
+            "Ты — настоящий представитель Mom's Club\\. Своим примером, активностью и поддержкой других ты показываешь, что значит быть частью нашего сообщества 💎\n\n"
+            "Мы гордимся тем, что ты с нами\\. Ты — лицо Mom's Club\\! 🏆"
+        ),
+        'special_thanks': (
+            "💖 *Красотка, особая благодарность\\!*\n\n"
+            "Ты получила достижение *«Особая благодарность»*\\!\n\n"
+            "Мы хотим выразить тебе особую благодарность за все, что ты делаешь для Mom's Club\\. Твоя поддержка, активность и забота не остаются незамеченными 🤍\n\n"
+            "Спасибо за то, что ты есть\\. Ты делаешь наше сообщество особенным\\! 💕"
+        ),
+        'milestone_celebrator': (
+            "🎉 *Красотка, празднуем вместе\\!*\n\n"
+            "Ты получила достижение *«Празднуем вместе»*\\!\n\n"
+            "Ты всегда рядом, когда мы отмечаем особые моменты\\. Твоя поддержка и участие делают наши праздники еще более яркими и запоминающимися 🎊\n\n"
+            "Спасибо, что делишь с нами радость\\. Вместе мы создаем незабываемые моменты\\! ✨"
+        ),
+        'supportive_friend': (
+            "🤗 *Красотка, ты поддерживающая\\!*\n\n"
+            "Ты получила достижение *«Поддерживающая подруга»*\\!\n\n"
+            "Ты всегда готова поддержать других участниц клуба, поделиться опытом и просто быть рядом\\. Такие люди, как ты, делают наше сообщество по\\-настоящему теплым и безопасным местом 💝\n\n"
+            "Спасибо за твою открытость и заботу\\. Ты — настоящая подруга\\! 🤍"
+        ),
+        'creative_soul': (
+            "🎨 *Красотка, ты творческая\\!*\n\n"
+            "Ты получила достижение *«Творческая душа»*\\!\n\n"
+            "Твои идеи, креативность и нестандартный подход вдохновляют всех вокруг\\. Ты показываешь, что творчество и самовыражение — это то, что делает жизнь ярче 🌈\n\n"
+            "Продолжай творить и делиться своим талантом\\. Ты — настоящий художник жизни\\! ✨"
+        ),
+        'motivator': (
+            "💪 *Красотка, ты мотиватор\\!*\n\n"
+            "Ты получила достижение *«Мотиватор»*\\!\n\n"
+            "Твоя энергия и позитивный настрой мотивируют других участниц к действию\\. Ты показываешь, что все возможно, когда есть вера в себя и поддержка сообщества 🚀\n\n"
+            "Спасибо за то, что вдохновляешь других на достижения\\. Ты — настоящий двигатель прогресса\\! 🌟"
+        ),
+        'heart_of_club': (
+            "💕 *Красотка, ты — сердце клуба\\!*\n\n"
+            "Ты получила достижение *«Сердце клуба»*\\!\n\n"
+            "Ты — та, кто делает Mom's Club по\\-настоящему особенным местом\\. Твоя забота, поддержка и участие создают ту атмосферу, которую мы все так любим 💖\n\n"
+            "Без тебя наш клуб был бы другим\\. Ты — его сердце и душа\\. Мы бесконечно благодарны за то, что ты с нами\\! 🩷"
+        ),
+        'creator_special': (
+            "💋 *Пссс, красотка\\!*\n\n"
+            "Ты получила достижение *«Моя сучка от создателя Moms Club»*\\!\n\n"
+            "Это достижение особенное, если понимаешь, смекаешь\\? 😎💕\n\n"
+            "Ты знаешь, что это значит\\. Ты особенная\\! 🔥"
+        ),
+    }
+    
+    message_text = badge_messages.get(badge_type)
+    if not message_text:
+        # Общее сообщение для неизвестных badges
+        message_text = (
+            f"🏆 *Поздравляю, красотка\\!*\n\n"
+            f"Ты получила новое достижение\\!\n\n"
+            f"Мы очень рады, что ты с нами\\. Продолжай в том же духе\\! 💖"
+        )
+    
+    # Если badge выдан администратором, добавляем специальное сообщение
+    if from_admin:
+        admin_message = (
+            "\n\n💝 *P\\.S\\.* Это достижение было выдано администратором в знак особой благодарности за твою преданность Mom's Club\\!"
+        )
+        message_text = message_text + admin_message
+    
+    try:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎀 Личный кабинет", callback_data="back_to_profile")]
+            ]
+        )
+        await bot.send_message(
+            user.telegram_id,
+            message_text,
+            reply_markup=keyboard,
+            parse_mode="MarkdownV2"
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомления о badge пользователю {user.telegram_id}: {e}")
+        return False
+
+
+async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
+    """
+    Проверяет условия для выдачи badges и выдает их при необходимости
+    
+    Args:
+        db: Сессия БД
+        user: Объект пользователя
+        
+    Returns:
+        Список типов выданных badges
+    """
+    granted_badges = []
+    
+    try:
+        # 1. Badge "Первая оплата"
+        if user.is_first_payment_done and not await has_user_badge(db, user.id, 'first_payment'):
+            badge = await grant_user_badge(db, user.id, 'first_payment')
+            if badge:
+                granted_badges.append('first_payment')
+        
+        # 2. Badge "Пригласил 1 друга" и "Пригласил 5 друзей"
+        # Подсчитываем количество рефералов пользователя
+        from database.models import User
+        referrals_query = select(func.count(User.id)).where(User.referrer_id == user.id)
+        result = await db.execute(referrals_query)
+        total_referrals = result.scalar() or 0
+        
+        if total_referrals >= 1:
+            if not await has_user_badge(db, user.id, 'referral_1'):
+                badge = await grant_user_badge(db, user.id, 'referral_1')
+                if badge:
+                    granted_badges.append('referral_1')
+        
+        # 3. Badge "Пригласил 5 друзей"
+        if total_referrals >= 5:
+            if not await has_user_badge(db, user.id, 'referral_5'):
+                badge = await grant_user_badge(db, user.id, 'referral_5')
+                if badge:
+                    granted_badges.append('referral_5')
+        
+        # 4. Badge "Месяц в клубе" (30 дней стажа)
+        from loyalty.levels import calc_tenure_days
+        tenure_days = await calc_tenure_days(db, user)
+        if tenure_days >= 30 and not await has_user_badge(db, user.id, 'month_in_club'):
+            badge = await grant_user_badge(db, user.id, 'month_in_club')
+            if badge:
+                granted_badges.append('month_in_club')
+        
+        # 5. Badge "Полгода в клубе" (180 дней стажа)
+        if tenure_days >= 180 and not await has_user_badge(db, user.id, 'half_year_in_club'):
+            badge = await grant_user_badge(db, user.id, 'half_year_in_club')
+            if badge:
+                granted_badges.append('half_year_in_club')
+        
+        # 6. Badge "Год в клубе" (365 дней стажа)
+        if tenure_days >= 365 and not await has_user_badge(db, user.id, 'year_in_club'):
+            badge = await grant_user_badge(db, user.id, 'year_in_club')
+            if badge:
+                granted_badges.append('year_in_club')
+        
+        # 7. Badge "Пригласила 10 друзей"
+        if total_referrals >= 10:
+            if not await has_user_badge(db, user.id, 'referral_10'):
+                badge = await grant_user_badge(db, user.id, 'referral_10')
+                if badge:
+                    granted_badges.append('referral_10')
+        
+        # 8. Badge "Верный клиент" (5+ успешных платежей)
+        from database.models import PaymentLog
+        payments_query = select(func.count(PaymentLog.id)).where(
+            and_(
+                PaymentLog.user_id == user.id,
+                PaymentLog.status == 'success',
+                PaymentLog.is_confirmed == True
+            )
+        )
+        payments_result = await db.execute(payments_query)
+        total_payments = payments_result.scalar() or 0
+        
+        if total_payments >= 5 and not await has_user_badge(db, user.id, 'loyal_customer'):
+            badge = await grant_user_badge(db, user.id, 'loyal_customer')
+            if badge:
+                granted_badges.append('loyal_customer')
+        
+        # 9. Badge "Платиновый клиент" (10+ успешных платежей)
+        if total_payments >= 10 and not await has_user_badge(db, user.id, 'platinum_customer'):
+            badge = await grant_user_badge(db, user.id, 'platinum_customer')
+            if badge:
+                granted_badges.append('platinum_customer')
+        
+        # 10. Badge "Активный участник" (подписка продлевалась 3+ раза)
+        subscriptions_query = select(func.count(Subscription.id)).where(
+            and_(
+                Subscription.user_id == user.id,
+                Subscription.is_active == False  # Завершенные подписки
+            )
+        )
+        subs_result = await db.execute(subscriptions_query)
+        completed_subs = subs_result.scalar() or 0
+        
+        if completed_subs >= 3 and not await has_user_badge(db, user.id, 'active_member'):
+            badge = await grant_user_badge(db, user.id, 'active_member')
+            if badge:
+                granted_badges.append('active_member')
+        
+        # 11. Badge "День рождения" (получен подарок на ДР)
+        if user.birthday_gift_year and not await has_user_badge(db, user.id, 'birthday_gift'):
+            badge = await grant_user_badge(db, user.id, 'birthday_gift')
+            if badge:
+                granted_badges.append('birthday_gift')
+    
+    except Exception as e:
+        logger.error(f"Ошибка при проверке badges для пользователя {user.id}: {e}")
+    
+    return granted_badges
 
 async def disable_user_auto_renewal(db: AsyncSession, user_id: int) -> bool:
     """
@@ -2230,3 +2904,557 @@ async def send_cancellation_request_notifications(bot, user, request_id: int):
                 
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений о заявке: {e}", exc_info=True)
+
+
+# ==================== ФУНКЦИИ ДЛЯ РАСШИРЕННОЙ АНАЛИТИКИ ====================
+
+async def get_new_users_by_date(db: AsyncSession, days: int = 30) -> List[Tuple[date, int]]:
+    """
+    Получает количество новых пользователей по дням за последние N дней
+    
+    Args:
+        db: Сессия БД
+        days: Количество дней для анализа (по умолчанию 30)
+        
+    Returns:
+        Список кортежей (дата, количество новых пользователей)
+    """
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days)
+    
+    # Получаем всех новых пользователей, созданных в указанный период
+    query = select(
+        func.date(User.created_at).label('date'),
+        func.count(User.id).label('count')
+    ).where(
+        and_(
+            func.date(User.created_at) >= start_date,
+            func.date(User.created_at) <= end_date
+        )
+    ).group_by(
+        func.date(User.created_at)
+    ).order_by(
+        func.date(User.created_at)
+    )
+    
+    result = await db.execute(query)
+    rows = result.all()
+    
+    # Создаем словарь для быстрого доступа
+    # В SQLite func.date() возвращает строку, нужно конвертировать в date
+    users_by_date = {}
+    for row in rows:
+        # row.date может быть строкой или date объектом
+        if isinstance(row.date, str):
+            # Конвертируем строку в date
+            try:
+                date_obj = datetime.strptime(row.date, '%Y-%m-%d').date()
+            except:
+                # Если формат другой, пробуем другой вариант
+                try:
+                    date_obj = datetime.fromisoformat(row.date).date()
+                except:
+                    logger.error(f"Не удалось распарсить дату пользователя: {row.date}")
+                    continue
+        else:
+            date_obj = row.date if isinstance(row.date, date) else row.date.date()
+        users_by_date[date_obj] = row.count
+    
+    # Заполняем все дни (даже если пользователей не было)
+    result_list = []
+    current_date = start_date
+    while current_date <= end_date:
+        count = users_by_date.get(current_date, 0)
+        result_list.append((current_date, count))
+        current_date += timedelta(days=1)
+    
+    return result_list
+
+
+async def get_new_subscriptions_by_date(db: AsyncSession, days: int = 30) -> List[Tuple[date, int]]:
+    """
+    Получает количество продаж (все подписки включая продления) по дням за последние N дней
+    
+    ВАЖНО: Используем дату платежа (PaymentLog.created_at), а не дату создания подписки,
+    потому что продажа происходит в момент оплаты, а не в момент создания подписки.
+    Это особенно важно для платежей, которые приходят ночью (например, платеж от 12.11 в 00:39,
+    но подписка была создана 11.11 в 21:39).
+    
+    Args:
+        db: Сессия БД
+        days: Количество дней для анализа (по умолчанию 30)
+        
+    Returns:
+        Список кортежей (дата, количество продаж)
+    """
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days)
+    
+    # Получаем все успешные платежи (продажи) по дате оплаты
+    # Используем PaymentLog.created_at, который обновляется на реальное время оплаты от ЮКассы
+    query = select(
+        func.date(PaymentLog.created_at).label('date'),
+        func.count(PaymentLog.id).label('count')
+    ).where(
+        and_(
+            PaymentLog.status == 'success',
+            PaymentLog.is_confirmed == True,
+            PaymentLog.payment_method == 'yookassa',  # Только платежи через ЮКассу
+            PaymentLog.transaction_id.isnot(None),  # Только с transaction_id от ЮКассы
+            func.date(PaymentLog.created_at) >= start_date,
+            func.date(PaymentLog.created_at) <= end_date
+        )
+    ).group_by(
+        func.date(PaymentLog.created_at)
+    ).order_by(
+        func.date(PaymentLog.created_at)
+    )
+    
+    result = await db.execute(query)
+    rows = result.all()
+    
+    # Создаем словарь для быстрого доступа
+    # В SQLite func.date() возвращает строку, нужно конвертировать в date
+    subscriptions_by_date = {}
+    for row in rows:
+        # row.date может быть строкой или date объектом
+        if isinstance(row.date, str):
+            # Конвертируем строку в date
+            try:
+                date_obj = datetime.strptime(row.date, '%Y-%m-%d').date()
+            except:
+                # Если формат другой, пробуем другой вариант
+                try:
+                    date_obj = datetime.fromisoformat(row.date).date()
+                except:
+                    logger.error(f"Не удалось распарсить дату: {row.date}")
+                    continue
+        else:
+            date_obj = row.date if isinstance(row.date, date) else row.date.date()
+        subscriptions_by_date[date_obj] = row.count
+    
+    # Заполняем все дни (даже если подписок не было)
+    result_list = []
+    current_date = start_date
+    while current_date <= end_date:
+        count = subscriptions_by_date.get(current_date, 0)
+        result_list.append((current_date, count))
+        current_date += timedelta(days=1)
+    
+    return result_list
+
+
+async def get_conversion_rate(db: AsyncSession) -> dict:
+    """
+    Рассчитывает конверсию: регистрации → платежи
+    
+    Returns:
+        Словарь с метриками конверсии
+    """
+    # Всего пользователей
+    total_users_query = select(func.count(User.id))
+    total_users_result = await db.execute(total_users_query)
+    total_users = total_users_result.scalar() or 0
+    
+    # Пользователей с хотя бы одним успешным платежом
+    users_with_payments_query = select(func.count(func.distinct(PaymentLog.user_id))).where(
+        and_(
+            PaymentLog.status == 'success',
+            PaymentLog.is_confirmed == True
+        )
+    )
+    users_with_payments_result = await db.execute(users_with_payments_query)
+    users_with_payments = users_with_payments_result.scalar() or 0
+    
+    # Пользователей с активной подпиской (исключая пожизненные)
+    now = datetime.now()
+    lifetime_threshold = datetime(2099, 1, 1)
+    active_subs_query = select(func.count(func.distinct(Subscription.user_id))).where(
+        and_(
+            Subscription.is_active == True,
+            Subscription.end_date > now,
+            Subscription.end_date < lifetime_threshold  # Исключаем пожизненные
+        )
+    )
+    active_subs_result = await db.execute(active_subs_query)
+    users_with_active_subs = active_subs_result.scalar() or 0
+    
+    # Конверсия
+    conversion_to_payment = round((users_with_payments / total_users * 100), 2) if total_users > 0 else 0
+    conversion_to_active = round((users_with_active_subs / total_users * 100), 2) if total_users > 0 else 0
+    
+    return {
+        'total_users': total_users,
+        'users_with_payments': users_with_payments,
+        'users_with_active_subs': users_with_active_subs,
+        'conversion_to_payment': conversion_to_payment,
+        'conversion_to_active': conversion_to_active
+    }
+
+
+async def get_average_ltv(db: AsyncSession) -> dict:
+    """
+    Рассчитывает средний LTV (lifetime value) пользователя
+    
+    Returns:
+        Словарь с метриками LTV
+    """
+    # Общая сумма всех успешных платежей (только реально оплаченные через webhook от ЮКассы)
+    total_revenue_query = select(func.sum(PaymentLog.amount)).where(
+        and_(
+            PaymentLog.status == 'success',
+            PaymentLog.is_confirmed == True,
+            PaymentLog.payment_method == 'yookassa',  # Только платежи через ЮКассу
+            PaymentLog.transaction_id.isnot(None)  # Только с transaction_id от ЮКассы
+        )
+    )
+    total_revenue_result = await db.execute(total_revenue_query)
+    total_revenue = total_revenue_result.scalar() or 0
+    
+    # Количество уникальных платящих пользователей (только реально оплаченные через webhook)
+    paying_users_query = select(func.count(func.distinct(PaymentLog.user_id))).where(
+        and_(
+            PaymentLog.status == 'success',
+            PaymentLog.is_confirmed == True,
+            PaymentLog.payment_method == 'yookassa',  # Только платежи через ЮКассу
+            PaymentLog.transaction_id.isnot(None)  # Только с transaction_id от ЮКассы
+        )
+    )
+    paying_users_result = await db.execute(paying_users_query)
+    paying_users = paying_users_result.scalar() or 0
+    
+    # Средний LTV
+    avg_ltv = round(total_revenue / paying_users, 2) if paying_users > 0 else 0
+    
+    # Средний LTV всех пользователей (включая не плативших)
+    total_users_query = select(func.count(User.id))
+    total_users_result = await db.execute(total_users_query)
+    total_users = total_users_result.scalar() or 0
+    avg_ltv_all = round(total_revenue / total_users, 2) if total_users > 0 else 0
+    
+    return {
+        'total_revenue': total_revenue,
+        'paying_users': paying_users,
+        'avg_ltv_paying': avg_ltv,
+        'avg_ltv_all': avg_ltv_all
+    }
+
+
+async def get_revenue_by_month(db: AsyncSession, months: int = 6) -> List[Tuple[str, int]]:
+    """
+    Рассчитывает выручку по месяцам
+    
+    Args:
+        db: Сессия БД
+        months: Количество месяцев для анализа (по умолчанию 6)
+        
+    Returns:
+        Список кортежей (месяц в формате YYYY-MM, выручка в рублях)
+    """
+    revenue_data = []
+    
+    # Для каждого месяца рассчитываем выручку
+    now = datetime.now()
+    for i in range(months):
+        # Месяц для анализа
+        target_month = now - timedelta(days=30 * (months - i - 1))
+        month_start = target_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        month_end = month_end.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # Сохраняем оригинальный месяц для ключа (до изменения периода)
+        month_key = month_start.strftime('%Y-%m')
+        
+        # Специальная обработка для месяцев 2025:
+        # - Октябрь 2025: включаем ВСЕ платежи от 31.10.2025 (период 1-31.10)
+        # - Ноябрь 2025: включаем платежи 1-12.11 + только один платеж от 31.10 (который был в отчете ЮКассы)
+        #   Transaction ID валидного платежа от 31.10: "309703e0-000f-5000-b000-1f83368cb27c"
+        query_start = month_start
+        special_oct31_transaction_id = None  # Для ноября: исключаем лишние платежи от 31.10
+        if month_start.year == 2025:
+            if month_start.month == 10:
+                # Октябрь: включаем все платежи от 31.10 (период 1-31.10)
+                month_end = datetime(2025, 10, 31, 23, 59, 59, 999999)
+            elif month_start.month == 11:
+                # Ноябрь: включаем платежи 1-12.11 + только один платеж от 31.10 (который был в отчете)
+                # Исключаем 4 лишних платежа от 31.10, которые не были в отчете ЮКассы
+                query_start = datetime(2025, 10, 31, 0, 0, 0)
+                special_oct31_transaction_id = "309703e0-000f-5000-b000-1f83368cb27c"
+        
+        # Для текущего месяца ограничиваем до текущего дня
+        if month_start.year == now.year and month_start.month == now.month:
+            month_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # Выручка за этот месяц (только реально оплаченные платежи через webhook от ЮКассы)
+        # ВАЖНО: Используем created_at, который обновляется на реальное время оплаты от ЮКассы (captured_at)
+        # в webhook_handlers.py строка 543: payment_log.created_at = payment_datetime
+        # где payment_datetime берется из payment.captured_at (время фактической оплаты)
+        # Учитываем только платежи, которые:
+        # 1. Пришли через webhook (payment_method = 'yookassa')
+        # 2. Имеют transaction_id от ЮКассы (не NULL)
+        # 3. Подтверждены (is_confirmed = True) - это означает, что webhook обработал платеж
+        # 4. Успешны (status = 'success')
+        # 5. Оплачены в указанный период (created_at содержит реальное время оплаты от ЮКассы)
+        # 6. Для ноября 2025: исключаем лишние платежи от 31.10 (оставляем только один, который был в отчете)
+        conditions = [
+            PaymentLog.status == 'success',
+            PaymentLog.is_confirmed == True,  # Только подтвержденные через webhook
+            PaymentLog.payment_method == 'yookassa',  # Только платежи через ЮКассу
+            PaymentLog.transaction_id.isnot(None),  # Только с transaction_id от ЮКассы
+            PaymentLog.created_at >= query_start,  # Используем query_start (может быть расширен для ноября)
+            PaymentLog.created_at <= month_end
+        ]
+        
+        # Для ноября 2025: исключаем лишние платежи от 31.10 (оставляем только один, который был в отчете)
+        if special_oct31_transaction_id:
+            # Для платежей от 31.10: включаем только тот, который был в отчете ЮКассы
+            # Для платежей от 1-12.11: включаем все
+            from sqlalchemy import or_
+            conditions.append(
+                or_(
+                    PaymentLog.created_at >= datetime(2025, 11, 1, 0, 0, 0),  # Платежи от 1.11 и позже
+                    PaymentLog.transaction_id == special_oct31_transaction_id  # Или валидный платеж от 31.10
+                )
+            )
+        
+        revenue_query = select(func.sum(PaymentLog.amount)).where(and_(*conditions))
+        revenue_result = await db.execute(revenue_query)
+        revenue = revenue_result.scalar() or 0
+        
+        revenue_data.append((month_key, int(revenue)))  # Используем оригинальный month_key
+    
+    return revenue_data
+
+
+async def get_retention_rate_by_month(db: AsyncSession, months: int = 6) -> List[Tuple[str, float]]:
+    """
+    Рассчитывает retention rate по месяцам
+    
+    Args:
+        db: Сессия БД
+        months: Количество месяцев для анализа (по умолчанию 6)
+        
+    Returns:
+        Список кортежей (месяц, retention rate в %)
+    """
+    retention_data = []
+    
+    # Для каждого месяца рассчитываем retention
+    for i in range(months):
+        # Месяц для анализа
+        target_month = datetime.now() - timedelta(days=30 * (months - i - 1))
+        month_start = target_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        
+        # Пользователи, зарегистрированные в этом месяце
+        new_users_query = select(func.count(User.id)).where(
+            and_(
+                User.created_at >= month_start,
+                User.created_at <= month_end
+            )
+        )
+        new_users_result = await db.execute(new_users_query)
+        new_users = new_users_result.scalar() or 0
+        
+        if new_users == 0:
+            retention_data.append((month_start.strftime('%Y-%m'), 0.0))
+            continue
+        
+        # Пользователи из этого месяца, у которых есть подписка после регистрации
+        retained_users_query = select(func.count(func.distinct(User.id))).join(
+            Subscription, User.id == Subscription.user_id
+        ).where(
+            and_(
+                User.created_at >= month_start,
+                User.created_at <= month_end,
+                Subscription.created_at >= User.created_at  # Подписка после регистрации
+            )
+        )
+        retained_users_result = await db.execute(retained_users_query)
+        retained_users = retained_users_result.scalar() or 0
+        
+        retention_rate = round((retained_users / new_users * 100), 2) if new_users > 0 else 0
+        retention_data.append((month_start.strftime('%Y-%m'), retention_rate))
+    
+    return retention_data
+
+
+async def get_top_referral_sources(db: AsyncSession, limit: int = 10) -> List[Tuple[str, int, int]]:
+    """
+    Получает топ источников по реферальным кодам
+    
+    Args:
+        db: Сессия БД
+        limit: Количество топ источников (по умолчанию 10)
+        
+    Returns:
+        Список кортежей (referral_code, количество рефералов, количество успешных платежей)
+    """
+    # Находим всех рефереров (пользователей, которые пригласили других)
+    # Группируем по referrer_id и считаем количество рефералов
+    referrers_query = select(
+        User.referrer_id,
+        func.count(User.id).label('referrals_count')
+    ).where(
+        User.referrer_id.isnot(None)
+    ).group_by(
+        User.referrer_id
+    ).order_by(
+        desc('referrals_count')
+    ).limit(limit)
+    
+    referrers_result = await db.execute(referrers_query)
+    referrers_rows = referrers_result.all()
+    
+    # Собираем статистику
+    top_sources = []
+    for row in referrers_rows:
+        referrer_id = row.referrer_id
+        referrals_count = row.referrals_count
+        
+        # Получаем информацию о реферере
+        referrer_query = select(User).where(User.id == referrer_id)
+        referrer_result = await db.execute(referrer_query)
+        referrer = referrer_result.scalar_one_or_none()
+        
+        if referrer:
+            referral_code = referrer.referral_code or 'Без кода'
+            
+            # Считаем платящих рефералов для этого реферера
+            paying_query = select(func.count(func.distinct(User.id))).join(
+                PaymentLog,
+                and_(
+                    PaymentLog.user_id == User.id,
+                    PaymentLog.status == 'success',
+                    PaymentLog.is_confirmed == True
+                )
+            ).where(
+                User.referrer_id == referrer_id
+            )
+            paying_result = await db.execute(paying_query)
+            paying_count = paying_result.scalar() or 0
+            
+            top_sources.append((referral_code, referrals_count, paying_count))
+    
+    return top_sources
+
+
+async def export_analytics_data(db: AsyncSession, format: str = 'text') -> str:
+    """
+    Экспортирует данные для аналитики
+    
+    Args:
+        db: Сессия БД
+        format: Формат экспорта ('text' или 'csv')
+        
+    Returns:
+        Строка с данными в указанном формате
+    """
+    from io import StringIO
+    import csv
+    
+    # Получаем все данные
+    new_users = await get_new_users_by_date(db, days=30)
+    new_subs = await get_new_subscriptions_by_date(db, days=30)
+    conversion = await get_conversion_rate(db)
+    ltv = await get_average_ltv(db)
+    revenue_by_month = await get_revenue_by_month(db, months=6)
+    retention = await get_retention_rate_by_month(db, months=6)
+    top_sources = await get_top_referral_sources(db, limit=10)
+    
+    if format == 'csv':
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Заголовки
+        writer.writerow(['Метрика', 'Значение'])
+        
+        # Конверсия
+        writer.writerow(['Всего пользователей', conversion['total_users']])
+        writer.writerow(['Пользователей с платежами', conversion['users_with_payments']])
+        writer.writerow(['Конверсия в платежи (%)', conversion['conversion_to_payment']])
+        writer.writerow(['Конверсия в активные подписки (%)', conversion['conversion_to_active']])
+        
+        # LTV
+        writer.writerow(['Общая выручка (₽)', ltv['total_revenue']])
+        writer.writerow(['Платящих пользователей', ltv['paying_users']])
+        writer.writerow(['Средний LTV платящих (₽)', ltv['avg_ltv_paying']])
+        writer.writerow(['Средний LTV всех (₽)', ltv['avg_ltv_all']])
+        
+        # Выручка по месяцам
+        writer.writerow([])
+        writer.writerow(['Месяц', 'Выручка (₽)'])
+        for month, revenue in revenue_by_month:
+            writer.writerow([month, revenue])
+        
+        # Retention
+        writer.writerow([])
+        writer.writerow(['Месяц', 'Retention Rate (%)'])
+        for month, rate in retention:
+            writer.writerow([month, rate])
+        
+        # Топ источников
+        writer.writerow([])
+        writer.writerow(['Реферальный код', 'Рефералов', 'Платящих'])
+        for code, refs, paying in top_sources:
+            writer.writerow([code, refs, paying])
+        
+        # Новые пользователи по дням
+        writer.writerow([])
+        writer.writerow(['Дата', 'Новых пользователей'])
+        for date_obj, count in new_users[-30:]:  # Последние 30 дней
+            writer.writerow([date_obj.strftime('%Y-%m-%d'), count])
+        
+        # Продажи по дням (все подписки включая продления)
+        writer.writerow([])
+        writer.writerow(['Дата', 'Продаж (все подписки)'])
+        for date_obj, count in new_subs[-30:]:  # Последние 30 дней
+            writer.writerow([date_obj.strftime('%Y-%m-%d'), count])
+        
+        return output.getvalue()
+    else:
+        # Текстовый формат
+        lines = []
+        lines.append("📊 ЭКСПОРТ ДАННЫХ АНАЛИТИКИ")
+        lines.append("=" * 50)
+        lines.append("")
+        
+        lines.append("КОНВЕРСИЯ:")
+        lines.append(f"  Всего пользователей: {conversion['total_users']}")
+        lines.append(f"  Пользователей с платежами: {conversion['users_with_payments']}")
+        lines.append(f"  Конверсия в платежи: {conversion['conversion_to_payment']}%")
+        lines.append(f"  Конверсия в активные подписки: {conversion['conversion_to_active']}%")
+        lines.append("")
+        
+        lines.append("LTV (LIFETIME VALUE):")
+        lines.append(f"  Общая выручка: {ltv['total_revenue']} ₽")
+        lines.append(f"  Платящих пользователей: {ltv['paying_users']}")
+        lines.append(f"  Средний LTV платящих: {ltv['avg_ltv_paying']} ₽")
+        lines.append(f"  Средний LTV всех: {ltv['avg_ltv_all']} ₽")
+        lines.append("")
+        
+        lines.append("ВЫРУЧКА ПО МЕСЯЦАМ (последние 6 месяцев):")
+        for month, revenue in revenue_by_month:
+            lines.append(f"  {month}: {revenue} ₽")
+        lines.append("")
+        
+        lines.append("RETENTION RATE ПО МЕСЯЦАМ:")
+        for month, rate in retention:
+            lines.append(f"  {month}: {rate}%")
+        lines.append("")
+        
+        lines.append("ТОП ИСТОЧНИКОВ (РЕФЕРАЛЬНЫЕ КОДЫ):")
+        for code, refs, paying in top_sources:
+            lines.append(f"  {code}: {refs} рефералов ({paying} платящих)")
+        lines.append("")
+        
+        lines.append("НОВЫЕ ПОЛЬЗОВАТЕЛИ ПО ДНЯМ (последние 30 дней):")
+        for date_obj, count in new_users[-30:]:  # Последние 30 дней
+            lines.append(f"  {date_obj.strftime('%d.%m.%Y')}: {count}")
+        lines.append("")
+        
+        lines.append("ПРОДАЖИ ПО ДНЯМ (последние 30 дней, все подписки включая продления):")
+        for date_obj, count in new_subs[-30:]:  # Последние 30 дней
+            lines.append(f"  {date_obj.strftime('%d.%m.%Y')}: {count}")
+        
+        return "\n".join(lines)

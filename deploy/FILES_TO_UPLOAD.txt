@@ -1,0 +1,41 @@
+# Список файлов для загрузки на сервер
+# Для системы лояльности
+
+## Критичные файлы (обязательно):
+
+bot.py
+handlers/user_handlers.py
+handlers/admin_handlers.py
+handlers/webhook_handlers.py
+database/models.py
+database/migrations/add_loyalty_fields.py
+utils/payment.py
+
+## Папка loyalty (вся папка):
+
+loyalty/__init__.py
+loyalty/levels.py
+loyalty/benefits.py
+loyalty/service.py
+
+## Скрипты деплоя (вся папка deploy):
+
+deploy/safe_deploy.sh
+deploy/deploy_new_version.sh
+deploy/rollback.sh
+deploy/README.md
+
+## Документация (опционально, для справки):
+
+LOYALTY_SYSTEM.md
+LOYALTY_SETUP_CHECKLIST.md
+LOYALTY_REVIEW_REPORT.md
+DEPLOYMENT_FINAL_CHECKLIST.md
+
+## Важно:
+
+- Файл .env НЕ должен загружаться (остается на сервере)
+- База данных momsclub.db НЕ должна загружаться (остается на сервере)
+- venv НЕ должна загружаться (создается на сервере)
+- __pycache__ НЕ должны загружаться
+

@@ -11,7 +11,16 @@ from handlers.webhook_handlers import app as webhook_app
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from config import BOT_TOKEN
-from handlers.admin_handlers import register_admin_handlers
+from handlers.admin import (
+    register_admin_core_handlers,
+    register_admin_referrals_handlers,
+    register_admin_subscriptions_handlers,
+    register_admin_promocodes_handlers,
+    register_admin_loyalty_handlers,
+    register_admin_cancellations_handlers,
+    register_admin_users_handlers,
+    register_admin_birthdays_handlers,
+)
 from handlers.user_handlers import register_user_handlers
 from handlers.message_handlers import register_message_handlers
 from utils.helpers import log_message
@@ -559,7 +568,22 @@ async def main():
     # Регистрация обработчиков
     # Важно сначала зарегистрировать админские обработчики,
     # чтобы они имели приоритет перед пользовательскими
-    register_admin_handlers(dp)
+    # Базовое меню админки и общие колбэки
+    register_admin_core_handlers(dp)
+    # Реферальные связи
+    register_admin_referrals_handlers(dp)
+    # Сроки подписок
+    register_admin_subscriptions_handlers(dp)
+    # Промокоды
+    register_admin_promocodes_handlers(dp)
+    # Лояльность
+    register_admin_loyalty_handlers(dp)
+    # Заявки на отмену автопродления
+    register_admin_cancellations_handlers(dp)
+    # Пользовательский поиск/карточка
+    register_admin_users_handlers(dp)
+    # Дни рождения пользователей
+    register_admin_birthdays_handlers(dp)
     register_user_handlers(dp)
     register_message_handlers(dp)
     
@@ -621,4 +645,4 @@ if __name__ == "__main__":
         # await bot.session.close() # Закрытие сессии бота
         logging.info("Бот остановлен")
     except Exception as e:
-        logging.error(f"Непредвиденная ошибка: {e}", exc_info=True) 
+        logging.error(f"Непредвиденная ошибка: {e}", exc_info=True)

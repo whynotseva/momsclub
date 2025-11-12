@@ -10,8 +10,17 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
-from sqlalchemy import update
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy import update, select
 from typing import Optional, Dict, Any
+from dateutil import parser as date_parser
+try:
+    import pytz
+    HAS_PYTZ = True
+except ImportError:
+    HAS_PYTZ = False
 
 from database.config import AsyncSessionLocal
 from database.crud import (
@@ -26,15 +35,19 @@ from database.crud import (
     get_user_by_telegram_id,
     extend_subscription_days,
     send_referral_bonus_notification,
+    send_referee_bonus_notification,
     is_first_payment_by_user,
+    check_and_grant_badges,
     update_user,
     get_active_subscription,
     get_payment_by_id,
-    create_payment_log
+    create_payment_log,
+    send_badge_notification
 )
 from database.models import PaymentLog, User, Subscription
 from utils.constants import REFERRAL_BONUS_DAYS, CLUB_CHANNEL_URL, SUBSCRIPTION_DAYS
 from utils.helpers import escape_markdown_v2
+from utils.payment import verify_yookassa_signature
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from dotenv import load_dotenv
@@ -56,6 +69,17 @@ bot = Bot(token=BOT_TOKEN)
 # Создаем FastAPI приложение
 app = FastAPI()
 
+# Инициализируем rate limiter
+# Используем in-memory хранилище (можно заменить на Redis для production)
+try:
+    limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    webhook_logger.info("Rate limiter инициализирован успешно")
+except Exception as e:
+    webhook_logger.warning(f"Не удалось инициализировать rate limiter: {e}. Продолжаем без rate limiting.")
+    limiter = None
+
 # Добавляем CORS
 app.add_middleware(
     CORSMiddleware,
@@ -64,6 +88,35 @@ app.add_middleware(
     allow_methods=["POST"],
     allow_headers=["*"],
 )
+
+# Список доверенных IP ЮКассы (можно расширить)
+# ЮКасса отправляет вебхуки с разных IP, поэтому используем более мягкие лимиты
+YOOKASSA_IPS = [
+    "185.71.76.0/27",
+    "185.71.77.0/27",
+    "77.75.153.0/25",
+    "77.75.156.11",
+    "77.75.156.35",
+    "77.75.154.128/25",
+    "2a02:5180::/32"
+]
+
+def is_yookassa_ip(ip: str) -> bool:
+    """Проверяет, является ли IP адресом ЮКассы"""
+    import ipaddress
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        for yookassa_net in YOOKASSA_IPS:
+            try:
+                if ip_obj in ipaddress.ip_network(yookassa_net, strict=False):
+                    return True
+            except ValueError:
+                # Если это не сеть, а конкретный IP
+                if str(ip_obj) == yookassa_net:
+                    return True
+    except ValueError:
+        pass
+    return False
 
 
 async def process_successful_payment(session, payment_log_entry, yookassa_payment_data: Optional[Dict[str, Any]] = None):
@@ -145,7 +198,6 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
         # Логируем применение скидки лояльности после успешного платежа (если была применена)
         from loyalty.service import effective_discount
         from database.models import LoyaltyEvent
-        import json
         
         applied_discount = effective_discount(user)
         
@@ -196,7 +248,6 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
         
         # Сохраняем информацию о лояльности в подписке (для аудита)
         if subscription:
-            from sqlalchemy import update
             from database.models import Subscription
             await session.execute(
                 update(Subscription)
@@ -246,6 +297,41 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
                             REFERRAL_BONUS_DAYS
                         )
                         payment_logger.info(f"Реферальный бонус начислен рефереру {referrer.id}")
+
+                    # Начисляем бонус рефералу (приглашенному пользователю), если ранее не начисляли
+                    ref_self_reason = f"referral_bonus_self_from_{referrer.id}"
+                    exists_q = await session.execute(
+                        select(PaymentLog).where(
+                            PaymentLog.user_id == user.id,
+                            PaymentLog.payment_method == "bonus",
+                            PaymentLog.details.like(f"%{ref_self_reason}%")
+                        )
+                    )
+                    already_self_bonus = exists_q.scalars().first() is not None
+                    if not already_self_bonus:
+                        success_self = await extend_subscription_days(
+                            session,
+                            user.id,
+                            REFERRAL_BONUS_DAYS,
+                            reason=ref_self_reason
+                        )
+                        if success_self:
+                            ref_name = referrer.first_name or "Пользователь"
+                            if referrer.username:
+                                ref_name = f"{ref_name} (@{referrer.username})"
+                            await send_referee_bonus_notification(
+                                bot,
+                                user.telegram_id,
+                                ref_name,
+                                REFERRAL_BONUS_DAYS
+                            )
+                            payment_logger.info(
+                                f"Реферальный бонус {REFERRAL_BONUS_DAYS} дней начислен рефералу (user_id={user.id}) от referrer_id={referrer.id}"
+                            )
+                        else:
+                            payment_logger.warning(
+                                f"Не удалось начислить реферальный бонус рефералу user_id={user.id}"
+                            )
         
         # Уведомление админам
         await send_payment_notification_to_admins(
@@ -258,6 +344,40 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
         
         # Уведомление пользователю
         await send_payment_success_notification(user, subscription)
+        
+        # Проверяем и выдаем badges после успешной оплаты
+        try:
+            # Обновляем пользователя из БД для актуальных данных
+            await session.refresh(user)
+            granted_badges = await check_and_grant_badges(session, user)
+            if granted_badges:
+                payment_logger.info(f"Выданы badges пользователю {user.id}: {granted_badges}")
+                # Отправляем уведомления о новых badges
+                for badge_type in granted_badges:
+                    try:
+                        await send_badge_notification(bot, user, badge_type, from_admin=False)
+                    except Exception as e:
+                        payment_logger.error(f"Ошибка при отправке уведомления о badge {badge_type}: {e}")
+        except Exception as e:
+            payment_logger.error(f"Ошибка при проверке badges для пользователя {user.id}: {e}")
+        
+        # Проверяем badges для реферера (если реферал сделал первую оплату)
+        if user.referrer_id:
+            try:
+                referrer = await get_user_by_id(session, user.referrer_id)
+                if referrer:
+                    await session.refresh(referrer)
+                    granted_referrer_badges = await check_and_grant_badges(session, referrer)
+                    if granted_referrer_badges:
+                        payment_logger.info(f"Выданы badges рефереру {referrer.id}: {granted_referrer_badges}")
+                        # Отправляем уведомления о новых badges рефереру
+                        for badge_type in granted_referrer_badges:
+                            try:
+                                await send_badge_notification(bot, referrer, badge_type, from_admin=False)
+                            except Exception as e:
+                                payment_logger.error(f"Ошибка при отправке уведомления о badge {badge_type} рефереру: {e}")
+            except Exception as e:
+                payment_logger.error(f"Ошибка при проверке badges для реферера {user.referrer_id}: {e}")
         
         return True
         
@@ -333,12 +453,34 @@ async def send_payment_success_notification(user, subscription):
         payment_logger.error(f"Ошибка отправки уведомления: {e}")
 
 
-@app.post("/webhook")
-async def yookassa_webhook_handler(request: Request):
-    """Обработчик вебхуков от ЮКассы"""
-    webhook_logger.info("Получен вебхук от ЮКассы")
+# Создаем обработчик вебхука с условным rate limiting
+# Применяем декоратор только если limiter доступен
+if limiter:
+    @app.post("/webhook")
+    @limiter.limit("10/second")  # 10 запросов в секунду для защиты от DDoS
+    async def yookassa_webhook_handler(request: Request):
+        """Обработчик вебхуков от ЮКассы с rate limiting"""
+        return await _process_webhook(request)
+else:
+    @app.post("/webhook")
+    async def yookassa_webhook_handler(request: Request):
+        """Обработчик вебхуков от ЮКассы (без rate limiting)"""
+        return await _process_webhook(request)
+
+
+async def _process_webhook(request: Request):
+    """Внутренняя функция обработки вебхука"""
+    client_ip = request.client.host if request.client else "unknown"
+    webhook_logger.info(f"Получен вебхук от IP: {client_ip}")
     
     try:
+        # Проверяем IP на подозрительную активность
+        # Для не-ЮКасса IP логируем предупреждение
+        if not is_yookassa_ip(client_ip):
+            webhook_logger.warning(f"⚠️ ВНИМАНИЕ: Вебхук от не-ЮКасса IP: {client_ip}. Проверяем подпись...")
+            # Дополнительная проверка для не-ЮКасса IP
+            # Если это не ЮКасса, но подпись валидна - возможно тестирование или прокси
+        
         # Получаем тело запроса
         body = await request.body()
         body_str = body.decode('utf-8')
@@ -346,11 +488,10 @@ async def yookassa_webhook_handler(request: Request):
         webhook_logger.info(f"Тело запроса: {body_str[:500]}...")
         
         # Валидация подписи вебхука
-        from utils.payment import verify_yookassa_signature
-        client_ip = request.client.host if request.client else None
-        
         if not verify_yookassa_signature(body_str, client_ip):
-            webhook_logger.warning(f"Вебхук не прошёл валидацию подписи от IP {client_ip}")
+            webhook_logger.error(f"🚨 БЕЗОПАСНОСТЬ: Вебхук не прошёл валидацию подписи от IP {client_ip}. Возможная атака!")
+            # Логируем подозрительную активность
+            webhook_logger.error(f"Подозрительный запрос: IP={client_ip}, Body length={len(body_str)}")
             return JSONResponse({"status": "error", "message": "Invalid signature"}, status_code=403)
         
         # Парсим JSON
@@ -397,12 +538,10 @@ async def handle_payment_succeeded(payment):
         payment_datetime = None
         if hasattr(payment, 'captured_at') and payment.captured_at:
             # captured_at - время когда платеж был подтвержден (оплачен)
-            from dateutil import parser
-            payment_datetime = parser.parse(payment.captured_at)
+            payment_datetime = date_parser.parse(payment.captured_at)
         elif hasattr(payment, 'created_at') and payment.created_at:
             # created_at - время создания платежа в ЮКассе
-            from dateutil import parser
-            payment_datetime = parser.parse(payment.created_at)
+            payment_datetime = date_parser.parse(payment.created_at)
         
         webhook_logger.info(f"Обработка успешного платежа: {payment_id}")
         webhook_logger.info(f"Метаданные: {metadata}")
@@ -416,9 +555,15 @@ async def handle_payment_succeeded(payment):
             payment_log = await get_payment_by_transaction_id(session, payment_id)
             
             # ЗАЩИТА ОТ ПОВТОРНОЙ ОБРАБОТКИ: если платеж уже успешно обработан, пропускаем
+            # Проверяем не только статус, но и наличие подписки для полной идемпотентности
             if payment_log and payment_log.status == "success" and payment_log.is_confirmed:
-                webhook_logger.info(f"Платеж {payment_id} уже обработан (status=success, is_confirmed=True), пропускаем повторную обработку")
-                return  # Идемпотентность - не обрабатываем повторно
+                # Дополнительная проверка: есть ли подписка, связанная с этим платежом
+                if payment_log.subscription_id:
+                    webhook_logger.info(f"Платеж {payment_id} уже обработан (status=success, is_confirmed=True, subscription_id={payment_log.subscription_id}), пропускаем повторную обработку")
+                    return  # Идемпотентность - не обрабатываем повторно
+                else:
+                    # Платеж помечен как success, но подписка не создана - возможно ошибка при обработке
+                    webhook_logger.warning(f"Платеж {payment_id} помечен как success, но подписка не найдена. Пытаемся обработать повторно...")
             
             if not payment_log:
                 webhook_logger.warning(f"Платеж {payment_id} не найден в БД, создаем новую запись")
@@ -456,23 +601,27 @@ async def handle_payment_succeeded(payment):
             payment_log.status = "success"
             payment_log.is_confirmed = True
             
-            # Если платеж уже существовал и есть реальное время от ЮКассы,
-            # обновляем его на реальное время (если время от ЮКассы более точное)
+            # ВАЖНО: Всегда обновляем created_at на реальное время оплаты от ЮКассы (captured_at)
+            # Это критично для правильного подсчета выручки по месяцам
             if payment_datetime:
                 # Конвертируем UTC в MSK если нужно
                 if payment_datetime.tzinfo is not None:
-                    try:
-                        import pytz
+                    if HAS_PYTZ:
                         msk_tz = pytz.timezone('Europe/Moscow')
                         payment_datetime = payment_datetime.astimezone(msk_tz).replace(tzinfo=None)
-                    except ImportError:
+                    else:
                         payment_datetime = payment_datetime.replace(tzinfo=None)
+                # Обновляем created_at на реальное время оплаты (captured_at от ЮКассы)
+                # Это важно для правильного подсчета выручки - используем время фактической оплаты
                 payment_log.created_at = payment_datetime
-                webhook_logger.info(f"Обновлено время платежа на реальное от ЮКассы: {payment_datetime}")
+                webhook_logger.info(f"Обновлено время платежа на реальное от ЮКассы (captured_at): {payment_datetime}")
+            else:
+                webhook_logger.warning(f"Не удалось получить время оплаты от ЮКассы для платежа {payment_id}")
             
-            await session.commit()
+            # НЕ коммитим здесь - коммитим только после успешной обработки всего платежа
+            # Это гарантирует атомарность транзакции
             
-            webhook_logger.info(f"Статус платежа обновлен: PaymentLog ID={payment_log.id}")
+            webhook_logger.info(f"Статус платежа подготовлен к обновлению: PaymentLog ID={payment_log.id}")
             
             # Обрабатываем успешный платеж (создаем/продлеваем подписку)
             # Передаем объект payment напрямую, чтобы сохранить payment_method_id
@@ -487,11 +636,13 @@ async def handle_payment_succeeded(payment):
             success = await process_successful_payment(session, payment_log, payment_data_dict)
             
             if success:
+                # Коммитим всю транзакцию атомарно: payment_log + subscription + все изменения
                 await session.commit()
-                webhook_logger.info(f"✅ Платеж {payment_id} успешно обработан")
+                webhook_logger.info(f"✅ Платеж {payment_id} успешно обработан и закоммичен")
             else:
+                # Откатываем всю транзакцию, включая изменения payment_log
                 await session.rollback()
-                webhook_logger.error(f"❌ Ошибка обработки платежа {payment_id}")
+                webhook_logger.error(f"❌ Ошибка обработки платежа {payment_id}, транзакция откачена")
         
     except Exception as e:
         webhook_logger.error(f"Ошибка в handle_payment_succeeded: {e}", exc_info=True)

@@ -5,7 +5,8 @@ from aiogram import Bot, types
 from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION
 from database.config import AsyncSessionLocal
 from database.crud import get_all_expired_subscriptions, get_expiring_soon_subscriptions, get_user_by_id, deactivate_subscription, get_user_by_telegram_id, has_active_subscription, has_welcome_sent, mark_welcome_sent, create_subscription_notification
-from utils.constants import CLUB_GROUP_ID, NOTIFICATION_DAYS_BEFORE, CLUB_CHANNEL_URL, SUBSCRIPTION_PRICE, CLUB_GROUP_TOPIC_ID, SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_2MONTHS, SUBSCRIPTION_PRICE_3MONTHS, ADMIN_IDS
+from database.models import User
+from utils.constants import CLUB_GROUP_ID, NOTIFICATION_DAYS_BEFORE, NOTIFICATION_DAYS_BEFORE_EARLY, CLUB_CHANNEL_URL, SUBSCRIPTION_PRICE, CLUB_GROUP_TOPIC_ID, SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_2MONTHS, SUBSCRIPTION_PRICE_3MONTHS, ADMIN_IDS
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # Настройка логирования
@@ -156,7 +157,7 @@ class GroupManager:
                         logger.error(f"Ошибка произошла при обработке пользователя TG_ID={user.telegram_id}")
         
         # Отправляем уведомление админам о выкинутых пользователях, если они есть
-        if kicked_users and ADMIN_IDS:
+        if kicked_users:
             try:
                 # Формируем список пользователей для уведомления
                 users_list = ""
@@ -174,9 +175,31 @@ class GroupManager:
                     f"Всего исключено: {kicked_in_this_run}"
                 )
                 
-                for admin_id in ADMIN_IDS:
+                # Получаем всех админов (включая кураторов) для отправки уведомлений об исключениях
+                from utils.admin_permissions import is_admin
+                from utils.constants import ADMIN_GROUP_CREATOR, ADMIN_GROUP_DEVELOPER, ADMIN_GROUP_CURATOR
+                from sqlalchemy import select
+                from database.crud import get_user_by_telegram_id
+                
+                admin_telegram_ids = set(ADMIN_IDS)  # Старые админы из константы
+                
+                # Добавляем админов из базы по группам (включая кураторов)
+                async with AsyncSessionLocal() as session:
+                    query = select(User).where(
+                        User.admin_group.in_([ADMIN_GROUP_CREATOR, ADMIN_GROUP_DEVELOPER, ADMIN_GROUP_CURATOR])
+                    )
+                    result = await session.execute(query)
+                    admin_users = result.scalars().all()
+                    for admin_user in admin_users:
+                        admin_telegram_ids.add(admin_user.telegram_id)
+                
+                # Отправляем уведомления всем админам (включая кураторов)
+                for admin_id in admin_telegram_ids:
                     try:
-                        await self.bot.send_message(admin_id, admin_message, parse_mode="HTML")
+                        async with AsyncSessionLocal() as session:
+                            admin_user = await get_user_by_telegram_id(session, admin_id)
+                            if admin_user and is_admin(admin_user):
+                                await self.bot.send_message(admin_id, admin_message, parse_mode="HTML")
                     except Exception as e_admin:
                         logger.error(f"Ошибка при отправке уведомления админу {admin_id} о исключенных пользователях: {e_admin}")
             except Exception as e_notify:
@@ -218,11 +241,67 @@ class GroupManager:
     async def notify_expiring_subscriptions(self):
         """
         Уведомляет пользователей о скором окончании подписки
+        Отправляет уведомления за 7 дней и за 1 день до окончания
         """
-        logger.info(f"Запущена проверка подписок, истекающих в ближайшие {NOTIFICATION_DAYS_BEFORE} дней")
         async with AsyncSessionLocal() as session:
+            # Проверяем подписки, истекающие через 7 дней (раннее напоминание)
+            logger.info(f"Проверка подписок, истекающих через {NOTIFICATION_DAYS_BEFORE_EARLY} дней")
+            early_expiring_subs = await get_expiring_soon_subscriptions(session, NOTIFICATION_DAYS_BEFORE_EARLY)
+            logger.info(f"Найдено {len(early_expiring_subs)} подписок, истекающих через {NOTIFICATION_DAYS_BEFORE_EARLY} дней")
+            
+            for sub in early_expiring_subs:
+                user = await get_user_by_id(session, sub.user_id)
+                if user:
+                    try:
+                        end_date = sub.end_date.strftime("%d.%m.%Y")
+                        days_left = (sub.end_date - datetime.now()).days
+                        
+                        # Отправляем только если ровно 7 дней (не меньше)
+                        if days_left == 7:
+                            notification_type = 'expiration_7days'
+                            
+                            if user.is_recurring_active and user.payment_method_id:
+                                # Автопродление включено
+                                msg = (
+                                    "💖 Красотка, напоминаю тебе! 💖\n\n"
+                                    f"Твоя подписка в Mom's Club заканчивается через неделю ({end_date}).\n\n"
+                                    "Не переживай — автопродление включено, и мы автоматически продлим твою подписку, "
+                                    "чтобы ты не потеряла доступ к клубу и всем материалам.\n\n"
+                                    "Если хочешь что-то изменить — зайди в личный кабинет. "
+                                    "Мы всегда рядом! 🩷"
+                                )
+                            else:
+                                # Автопродление выключено
+                                msg = (
+                                    "💕 Красотка, хочу напомнить тебе! 💕\n\n"
+                                    f"Твоя подписка в Mom's Club заканчивается через неделю ({end_date}).\n\n"
+                                    "Я знаю, как легко забыть о таких вещах в суете маминых будней. "
+                                    "Но помни: в нашем клубе тебя всегда ждут поддержка, понимание и уютная атмосфера.\n\n"
+                                    "Когда подписка закончится, ты сможешь продлить её и снова быть с нами. "
+                                    "Мы всегда рады видеть тебя! 💖"
+                                )
+                            
+                            # За 7 дней не предлагаем продление (подписка еще активна)
+                            # Только кнопка в личный кабинет
+                            keyboard = InlineKeyboardMarkup(
+                                inline_keyboard=[
+                                    [InlineKeyboardButton(text="🎀 Личный кабинет", callback_data="back_to_profile")]
+                                ]
+                            )
+                            await self.bot.send_message(
+                                user.telegram_id,
+                                msg,
+                                reply_markup=keyboard
+                            )
+                            logger.info(f"Отправлено раннее уведомление (7 дней) пользователю {user.telegram_id}")
+                            await create_subscription_notification(session, sub.id, notification_type)
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке раннего уведомления пользователю {user.telegram_id}: {e}")
+            
+            # Проверяем подписки, истекающие через 1 день (последнее напоминание)
+            logger.info(f"Проверка подписок, истекающих через {NOTIFICATION_DAYS_BEFORE} день")
             expiring_subs = await get_expiring_soon_subscriptions(session, NOTIFICATION_DAYS_BEFORE)
-            logger.info(f"Найдено {len(expiring_subs)} подписок, истекающих скоро")
+            logger.info(f"Найдено {len(expiring_subs)} подписок, истекающих через {NOTIFICATION_DAYS_BEFORE} день")
 
             for sub in expiring_subs:
                 user = await get_user_by_id(session, sub.user_id)
@@ -230,6 +309,7 @@ class GroupManager:
                     try:
                         end_date = sub.end_date.strftime("%d.%m.%Y")
                         days_left = (sub.end_date - datetime.now()).days
+                        
                         if days_left == 0:
                             notification_type = 'expiration_today'
                             time_text = "сегодня"
@@ -240,27 +320,67 @@ class GroupManager:
                             notification_type = f'expiration_{days_left}_days'
                             time_text = f"через {days_left} дней"
 
-                        # --- Новый текст ---
+                        # Улучшенные тексты в стиле сообщества
                         if user.is_recurring_active and user.payment_method_id:
-                            # Автопродление включено
-                            msg = (
-                                "💖 Mom's Club напоминает! 💖\n\n"
-                                f"Ваша подписка заканчивается {time_text} ({end_date}).\n"
-                                "Завтра с вашей карты автоматически спишется оплата, чтобы вы не потеряли доступ к клубу и всем материалам.\n\n"
-                                "Если хотите отменить автопродление — сделайте это в личном кабинете."
+                            # Автопродление включено - не предлагаем продление
+                            if days_left == 0:
+                                msg = (
+                                    "💖 Красотка, последнее напоминание! 💖\n\n"
+                                    f"Твоя подписка в Mom's Club заканчивается {time_text} ({end_date}).\n\n"
+                                    "Не переживай — завтра мы автоматически продлим твою подписку, "
+                                    "чтобы ты не потеряла доступ к клубу и всем материалам.\n\n"
+                                    "Ты можешь быть спокойна: мы позаботимся о том, чтобы ты оставалась с нами! 🩷"
+                                )
+                            else:
+                                msg = (
+                                    "💖 Красотка, напоминаю тебе! 💖\n\n"
+                                    f"Твоя подписка в Mom's Club заканчивается {time_text} ({end_date}).\n\n"
+                                    "Не переживай — мы автоматически продлим твою подписку, "
+                                    "чтобы ты не потеряла доступ к клубу и всем материалам.\n\n"
+                                    "Если хочешь что-то изменить — зайди в личный кабинет. "
+                                    "Мы всегда рядом! 🩷"
+                                )
+                            # Для автопродления всегда только личный кабинет
+                            keyboard = InlineKeyboardMarkup(
+                                inline_keyboard=[
+                                    [InlineKeyboardButton(text="🎀 Личный кабинет", callback_data="back_to_profile")]
+                                ]
                             )
                         else:
                             # Автопродление выключено
-                            msg = (
-                                f"💔 Подписка в Mom's Club заканчивается {time_text} ({end_date})\n\n"
-                                "Доступ к клубу будет приостановлен. Чтобы снова быть с нами — продлите подписку, нажав на кнопку ниже!\n\n"
-                                "Мы всегда рады видеть вас в нашем уютном клубе мам! 💖"
-                            )
-                        keyboard = InlineKeyboardMarkup(
-                            inline_keyboard=[
-                                [InlineKeyboardButton(text="💳 Продлить подписку", callback_data="renew_subscription")]
-                            ]
-                        )
+                            if days_left == 0:
+                                # В день окончания можно продлить
+                                msg = (
+                                    "💔 Красотка, это последний день! 💔\n\n"
+                                    f"Твоя подписка в Mom's Club заканчивается {time_text} ({end_date}).\n\n"
+                                    "Я знаю, как легко забыть о таких вещах в суете маминых будней. "
+                                    "Но помни: в нашем клубе тебя всегда ждут поддержка, понимание и уютная атмосфера.\n\n"
+                                    "Не теряй связь с нами — продли подписку прямо сейчас! "
+                                    "Мы всегда рады видеть тебя с нами! 💖"
+                                )
+                                # В день окончания предлагаем продление
+                                keyboard = InlineKeyboardMarkup(
+                                    inline_keyboard=[
+                                        [InlineKeyboardButton(text="💳 Продлить подписку", callback_data="renew_subscription")],
+                                        [InlineKeyboardButton(text="🎀 Личный кабинет", callback_data="back_to_profile")]
+                                    ]
+                                )
+                            else:
+                                # За 1 день еще нельзя продлить (подписка активна)
+                                msg = (
+                                    "💔 Красотка, важное напоминание! 💔\n\n"
+                                    f"Твоя подписка в Mom's Club заканчивается {time_text} ({end_date}).\n\n"
+                                    "Я знаю, как легко забыть о таких вещах в суете маминых будней. "
+                                    "Но помни: в нашем клубе тебя всегда ждут поддержка, понимание и уютная атмосфера.\n\n"
+                                    "Когда подписка закончится, ты сможешь продлить её и снова быть с нами. "
+                                    "Мы всегда рады видеть тебя! 💖"
+                                )
+                                # За 1 день не предлагаем продление (подписка еще активна)
+                                keyboard = InlineKeyboardMarkup(
+                                    inline_keyboard=[
+                                        [InlineKeyboardButton(text="🎀 Личный кабинет", callback_data="back_to_profile")]
+                                    ]
+                                )
                         await self.bot.send_message(
                             user.telegram_id,
                             msg,

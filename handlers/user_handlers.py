@@ -2,7 +2,7 @@ from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 import os
-from utils.helpers import log_message, escape_markdown_v2, get_payment_method_markup, get_payment_notice, safe_edit_message
+from utils.helpers import log_message, escape_markdown_v2, get_payment_method_markup, get_payment_notice, safe_edit_message, format_user_error_message
 from database.config import AsyncSessionLocal
 from database.crud import (
     get_or_create_user, 
@@ -43,13 +43,17 @@ from database.crud import (
     enable_user_auto_renewal,
     update_user,
     create_autorenewal_cancellation_request,
-    send_cancellation_request_notifications
+    send_cancellation_request_notifications,
+    get_user_payment_history,
+    get_user_badges
 )
 from sqlalchemy import update
-from database.models import User
+from sqlalchemy import select
+from database.models import User, PaymentLog
 from utils.payment import create_payment_link, check_payment_status
 from loyalty.service import effective_discount, price_with_discount, apply_benefit_from_callback
 from loyalty import calc_tenure_days, level_for_days
+from loyalty.levels import get_loyalty_progress
 from utils.constants import (
     CLUB_CHANNEL_URL, 
     SUBSCRIPTION_PRICE_FIRST,
@@ -65,8 +69,9 @@ from utils.constants import (
     TEMPORARY_PAYMENT_MODE
 )
 import asyncio
-from handlers.admin_handlers import ADMIN_IDS  # Импортируем список администраторов
+from utils.constants import ADMIN_IDS  # Импортируем список администраторов
 import logging
+from collections import defaultdict
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 from datetime import datetime, timedelta, date
@@ -350,11 +355,13 @@ async def process_migrate_subscribe(callback: types.CallbackQuery):
         
     except Exception as e:
         logger.error(f"Ошибка в process_migrate_subscribe: {e}")
-        await callback.answer("❌ Произошла ошибка", show_alert=True)
+        error_msg = format_user_error_message(e, "при обработке подписки")
+        await callback.answer(error_msg, show_alert=True)
 
 
 # Модифицируем обработчик нажатия на кнопку подписки, добавляя проверку состояния
 @user_router.callback_query(F.data == "subscribe")
+@user_router.callback_query(F.data == "subscribe:from_broadcast")
 async def process_subscribe(callback: types.CallbackQuery):
     log_message(callback.from_user.id, "view_offer", "action")
     
@@ -370,12 +377,16 @@ async def process_subscribe(callback: types.CallbackQuery):
                     # Если есть активная подписка, отправляем новое сообщение вместо редактирования
                     await callback.answer("У вас уже есть доступ к каналу", show_alert=True)
                     
+                    # Определяем, откуда вызван (из рассылки или из профиля)
+                    from_broadcast = callback.data == "subscribe:from_broadcast"
+                    
                     # Создаем клавиатуру для перехода в канал
+                    back_button = InlineKeyboardButton(text="🔙 Назад к рассылке", callback_data="show_broadcast_loyalty") if from_broadcast else InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")
                     keyboard = InlineKeyboardMarkup(
                         inline_keyboard=[
                             [InlineKeyboardButton(text="🔐 Войти в закрытый канал", url=CLUB_CHANNEL_URL)],
                             [InlineKeyboardButton(text="🔍 Мои подписки", callback_data="my_subscriptions")],
-                            [InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")]
+                            [back_button]
                         ]
                     )
                     
@@ -393,6 +404,21 @@ async def process_subscribe(callback: types.CallbackQuery):
         if TEMPORARY_PAYMENT_MODE:
             message_text = get_payment_notice()
             keyboard = get_payment_method_markup()
+            
+            # Если вызов из рассылки, заменяем кнопку "Назад" на "Назад к рассылке"
+            from_broadcast = callback.data == "subscribe:from_broadcast"
+            if from_broadcast and keyboard.inline_keyboard:
+                # Заменяем последнюю кнопку "Назад" на "Назад к рассылке"
+                new_keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+                for row in keyboard.inline_keyboard:
+                    new_row = []
+                    for button in row:
+                        if button.callback_data == "back_to_profile":
+                            new_row.append(InlineKeyboardButton(text="🔙 Назад к рассылке", callback_data="show_broadcast_loyalty"))
+                        else:
+                            new_row.append(button)
+                    new_keyboard.inline_keyboard.append(new_row)
+                keyboard = new_keyboard
             
             try:
                 # Удаляем предыдущее сообщение
@@ -458,23 +484,28 @@ async def process_subscribe(callback: types.CallbackQuery):
 
 <b>Нажми на один из вариантов, чтобы присоединиться прямо сейчас!</b>"""
 
+        # Определяем, откуда вызван (из рассылки или из профиля)
+        from_broadcast = callback.data == "subscribe:from_broadcast"
+        
         # Создаем инлайн-клавиатуру с кнопками разных тарифов
         if is_first_payment:
             # Для первой оплаты показываем только 1 месяц
+            back_button = InlineKeyboardButton(text="🔙 Назад к рассылке", callback_data="show_broadcast_loyalty") if from_broadcast else InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text=f"🎁 1 месяц — {SUBSCRIPTION_PRICE_FIRST} ₽ (специальная цена)", callback_data="payment_1month")],
-                    [InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")]
+                    [back_button]
                 ]
             )
         else:
             # Обычные тарифы
+            back_button = InlineKeyboardButton(text="🔙 Назад к рассылке", callback_data="show_broadcast_loyalty") if from_broadcast else InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text=f"1 месяц — {SUBSCRIPTION_PRICE} ₽", callback_data="payment_1month")],
                     [InlineKeyboardButton(text=f"2 месяца — {SUBSCRIPTION_PRICE_2MONTHS} ₽", callback_data="payment_2months")],
                     [InlineKeyboardButton(text=f"3 месяца — {SUBSCRIPTION_PRICE_3MONTHS} ₽", callback_data="payment_3months")],
-                    [InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")]
+                    [back_button]
                 ]
             )
         
@@ -505,7 +536,8 @@ async def process_subscribe(callback: types.CallbackQuery):
             logger.error(f"Ошибка при отправке баннера тарифов: {e}")
     except Exception as e:
         logger.error(f"Ошибка при обработке подписки: {e}")
-        await callback.answer("Произошла ошибка. Пожалуйста, попробуйте позже.", show_alert=True)
+        error_msg = format_user_error_message(e, "при выборе тарифа подписки")
+        await callback.answer(error_msg, show_alert=True)
     
     # Убираем часы загрузки на кнопке
     await callback.answer()
@@ -590,7 +622,8 @@ async def process_subscription_payment(callback: types.CallbackQuery, state: FSM
     
     except Exception as e:
         logger.error(f"Ошибка при создании платежа: {e}")
-        await callback.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
+        error_msg = format_user_error_message(e, "при создании платежа")
+        await callback.answer(error_msg, show_alert=True)
 
 
 async def create_payment_for_user(callback: types.CallbackQuery, state: FSMContext, user, price: int, days: int, sub_type: str):
@@ -599,8 +632,13 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
         from database.crud import create_payment_log
         
         async with AsyncSessionLocal() as session:
-            # Применяем скидку лояльности
-            discount_percent = effective_discount(user)
+            # Применяем скидку лояльности ТОЛЬКО если это НЕ специальная цена первого платежа
+            # Специальная цена 690₽ — это уже скидка, повторная скидка не применяется
+            discount_percent = 0
+            if price != SUBSCRIPTION_PRICE_FIRST:
+                # Скидка применяется только к обычным ценам (990₽ и выше)
+                discount_percent = effective_discount(user)
+            
             final_price = price_with_discount(price, discount_percent)
             
             # Формируем описание с информацией о скидке
@@ -680,13 +718,16 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                     )
                 except Exception as e:
                     logging.error(f"Ошибка при отправке сообщения о платеже: {e}")
-                    await callback.answer("Произошла ошибка при создании платежа", show_alert=True)
+                    error_msg = format_user_error_message(e, "при отправке информации о платеже")
+                    await callback.answer(error_msg, show_alert=True)
             else:
-                await callback.answer("Произошла ошибка при создании ссылки на оплату", show_alert=True)
+                error_msg = format_user_error_message(Exception("Не удалось создать ссылку на оплату"), "при создании ссылки на оплату")
+                await callback.answer(error_msg, show_alert=True)
                 
     except Exception as e:
         logger.error(f"Ошибка при создании платежа для пользователя: {e}")
-        await callback.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
+        error_msg = format_user_error_message(e, "при создании платежа")
+        await callback.answer(error_msg, show_alert=True)
 
 
 # Обработчик ввода телефона для оплаты (ОТКЛЮЧЕН по требованию заказчицы)
@@ -990,6 +1031,28 @@ async def process_check_payment(callback: types.CallbackQuery, state: FSMContext
                                 payment_logger.info(f"Реферальный бонус успешно начислен рефереру {referrer.id}")
                             else:
                                 payment_logger.error(f"Не удалось начислить реферальный бонус рефереру {referrer.id}")
+
+                            # Начисляем бонус рефералу (самому пользователю) при первом платеже, если ещё не начисляли
+                            ref_self_reason = f"referral_bonus_self_from_{referrer.id}"
+                            self_exists_q = await session.execute(
+                                select(PaymentLog).where(
+                                    PaymentLog.user_id == user.id,
+                                    PaymentLog.payment_method == "bonus",
+                                    PaymentLog.details.like(f"%{ref_self_reason}%")
+                                )
+                            )
+                            already_self_bonus = self_exists_q.scalars().first() is not None
+                            if not already_self_bonus:
+                                success_self = await extend_subscription_days(session, user.id, REFERRAL_BONUS_DAYS, reason=ref_self_reason)
+                                if success_self:
+                                    ref_name = referrer.first_name or "Пользователь"
+                                    if referrer.username:
+                                        ref_name = f"{ref_name} (@{referrer.username})"
+                                    from database.crud import send_referee_bonus_notification
+                                    await send_referee_bonus_notification(callback.bot, user.telegram_id, ref_name, REFERRAL_BONUS_DAYS)
+                                    payment_logger.info(f"Реферальный бонус {REFERRAL_BONUS_DAYS} дней начислен рефералу user_id={user.id}")
+                                else:
+                                    payment_logger.warning(f"Не удалось начислить реферальный бонус рефералу user_id={user.id}")
                         else:
                             payment_logger.info(f"Реферальный бонус за пользователя {user.id} уже был начислен ранее (проверка has_received_referral_bonus).")
                     else:
@@ -1149,7 +1212,8 @@ async def process_check_payment(callback: types.CallbackQuery, state: FSMContext
                 
     except Exception as e:
         payment_logger.error(f"Ошибка при проверке платежа: {e}", exc_info=True)
-        await callback.answer("Произошла ошибка при проверке платежа. Пожалуйста, попробуйте позже.", show_alert=True)
+        error_msg = format_user_error_message(e, "при проверке платежа")
+        await callback.answer(error_msg, show_alert=True)
 
 
 # Обработчик команды /help
@@ -1439,7 +1503,8 @@ async def process_extend_user_subscription(callback: types.CallbackQuery, state:
                 )
     except Exception as e:
         logging.error(f"Ошибка при обработке продления подписки: {e}")
-        await callback.answer("Произошла ошибка. Пожалуйста, попробуйте позже.", show_alert=True)
+        error_msg = format_user_error_message(e, "при продлении подписки")
+        await callback.answer(error_msg, show_alert=True)
     
     # Убираем часы загрузки на кнопке
     await callback.answer()
@@ -1565,22 +1630,26 @@ async def process_confirm_extension(callback: types.CallbackQuery, state: FSMCon
                 )
     except Exception as e:
         logging.error(f"Ошибка при обработке подтверждения продления: {e}")
-        await callback.answer("Произошла ошибка. Пожалуйста, попробуйте позже.", show_alert=True)
+        error_msg = format_user_error_message(e, "при подтверждении продления подписки")
+        await callback.answer(error_msg, show_alert=True)
     
     # Убираем часы загрузки на кнопке
     await callback.answer()
 
 
 # Вспомогательная функция для форматирования краткой информации о лояльности (для главного экрана)
-def format_loyalty_status_short(user) -> str:
+async def format_loyalty_status_short(db, user) -> str:
     """
     Формирует краткую информацию о статусе лояльности для главного экрана.
     Возвращает пустую строку, если нет информации о лояльности.
     Форматирование уже готово для MarkdownV2.
     """
-    tenure_days = calc_tenure_days(user)
+    tenure_days = await calc_tenure_days(db, user)
     level = user.current_loyalty_level or 'none'
     discount = effective_discount(user)
+    
+    # Получаем прогресс до следующего уровня
+    progress = get_loyalty_progress(tenure_days, level)
     
     # Если есть уровень
     if level != 'none':
@@ -1595,9 +1664,26 @@ def format_loyalty_status_short(user) -> str:
         if discount > 0:
             discount_escaped = escape_markdown_v2(str(discount))
             # Все скидки лояльности теперь постоянные
-            return f"💎 *Твой статус:* {level_name} {emoji}\n💎 *Постоянная скидка:* {discount_escaped}% ✨\n"
+            status_text = f"💎 *Твой статус:* {level_name} {emoji}\n💎 *Постоянная скидка:* {discount_escaped}% ✨\n"
         else:
-            return f"💎 *Твой статус:* {level_name} {emoji}\n"
+            status_text = f"💎 *Твой статус:* {level_name} {emoji}\n"
+        
+        # Добавляем прогресс-бар, если есть следующий уровень
+        if progress['next_level']:
+            next_level_names = {
+                'silver': 'Silver Mom ⭐',
+                'gold': 'Gold Mom 🌟',
+                'platinum': 'Platinum Mom 💍'
+            }
+            next_level_name = next_level_names.get(progress['next_level'], progress['next_level'])
+            days_needed_escaped = escape_markdown_v2(str(progress['days_needed']))
+            progress_bar_escaped = escape_markdown_v2(progress['progress_bar'])
+            status_text += f"\n📊 *Прогресс до {next_level_name}:*\n`{progress_bar_escaped}`\nОсталось: *{days_needed_escaped}* дней\n"
+        elif progress['current_level'] == 'platinum':
+            # Максимальный уровень достигнут
+            status_text += "\n🏆 *Ты достигла максимального уровня\\!*\n"
+        
+        return status_text
     
     # Если нет уровня, но есть скидка
     elif discount > 0:
@@ -1611,18 +1697,74 @@ def format_loyalty_status_short(user) -> str:
     # Если есть стаж (больше 0 дней), но нет уровня
     elif tenure_days > 0:
         tenure_escaped = escape_markdown_v2(str(tenure_days))
+        # Показываем прогресс до Silver
+        if progress['next_level']:
+            days_needed_escaped = escape_markdown_v2(str(progress['days_needed']))
+            progress_bar_escaped = escape_markdown_v2(progress['progress_bar'])
+            return f"💫 Ты с нами уже *{tenure_escaped}* дней\\! Скоро откроются бонусы ✨\n\n📊 *Прогресс до Silver Mom ⭐:*\n`{progress_bar_escaped}`\nОсталось: *{days_needed_escaped}* дней\n"
         return f"💫 Ты с нами уже *{tenure_escaped}* дней\\! Скоро откроются бонусы ✨\n"
     
     # Если ничего нет
     return ""
 
 
+async def format_user_badges(db, user) -> str:
+    """
+    Форматирует список badges пользователя для отображения в профиле.
+    Возвращает пустую строку, если badges нет.
+    """
+    badges = await get_user_badges(db, user.id)
+    if not badges:
+        return ""
+    
+    badge_names = {
+        # Автоматические badges
+        'first_payment': ('💳 Первая оплата', 'Твоя первая оплата в Mom\'s Club'),
+        'referral_1': ('🤝 Пригласила друга', 'Ты пригласила первого друга'),
+        'referral_5': ('🌟 Пригласила 5 друзей', 'Ты пригласила 5 друзей'),
+        'referral_10': ('✨ Пригласила 10 друзей', 'Ты пригласила 10 друзей!'),
+        'month_in_club': ('📅 Месяц в клубе', 'Ты с нами уже месяц!'),
+        'half_year_in_club': ('💫 Полгода в клубе', 'Ты с нами уже полгода!'),
+        'year_in_club': ('🏆 Год в клубе', 'Ты с нами уже целый год!'),
+        'loyal_customer': ('💎 Верный клиент', '5+ успешных платежей'),
+        'platinum_customer': ('👑 Платиновый клиент', '10+ успешных платежей'),
+        'active_member': ('🔥 Активный участник', 'Подписка продлевалась 3+ раза'),
+        'birthday_gift': ('🎂 День рождения', 'Получен подарок на ДР'),
+        # Специальные badges (только от админов)
+        'community_helper': ('💝 Помощь сообществу', 'Особый вклад в развитие клуба'),
+        'inspiration': ('✨ Источник вдохновения', 'Ты вдохновляешь других участниц'),
+        'early_supporter': ('🌱 Первопроходец', 'Одна из первых участниц клуба'),
+        'ambassador': ('🌟 Амбассадор клуба', 'Настоящий представитель Mom\'s Club'),
+        'special_thanks': ('💖 Особая благодарность', 'Особая благодарность от команды'),
+        'milestone_celebrator': ('🎉 Празднуем вместе', 'Особые моменты вместе с нами'),
+        'supportive_friend': ('🤗 Поддерживающая подруга', 'Ты всегда поддерживаешь других'),
+        'creative_soul': ('🎨 Творческая душа', 'Твои идеи вдохновляют'),
+        'motivator': ('💪 Мотиватор', 'Ты мотивируешь других к действию'),
+        'heart_of_club': ('💕 Сердце клуба', 'Ты — сердце нашего сообщества'),
+        'creator_special': ('💋 Моя сучка от создателя Moms Club', 'Особое достижение от создателя'),
+    }
+    
+    badges_text = "\n\n🏆 *Твои достижения:*\n"
+    for badge in badges:
+        # Получаем название badge из словаря, если нет - используем badge_type
+        badge_info = badge_names.get(badge.badge_type)
+        if badge_info:
+            name, desc = badge_info
+        else:
+            # Если badge_type не найден в словаре, используем его как есть
+            name = badge.badge_type
+        name_escaped = escape_markdown_v2(name)
+        badges_text += f"• {name_escaped}\n"
+    
+    return badges_text
+
+
 # Вспомогательная функция для форматирования подробной информации о лояльности (для управления подпиской)
-def format_loyalty_status_detailed(user) -> str:
+async def format_loyalty_status_detailed(db, user) -> str:
     """
     Формирует подробную информацию о статусе лояльности для раздела управления подпиской.
     """
-    tenure_days = calc_tenure_days(user)
+    tenure_days = await calc_tenure_days(db, user)
     level = user.current_loyalty_level or 'none'
     discount = effective_discount(user)
     
@@ -1720,7 +1862,7 @@ async def process_profile(message: types.Message):
             subscription = await get_active_subscription(session, user.id)
             
             # Выбираем картинку в зависимости от уровня лояльности
-            tenure_days = calc_tenure_days(user)
+            tenure_days = await calc_tenure_days(session, user)
             level = user.current_loyalty_level or level_for_days(tenure_days)
             
             # Определяем путь к картинке на основе уровня лояльности
@@ -1755,24 +1897,50 @@ async def process_profile(message: types.Message):
                 days_text = escape_markdown_v2(days_text)
                 
                 # Формируем информацию о лояльности
-                loyalty_status = format_loyalty_status_short(user)
+                loyalty_status = await format_loyalty_status_short(session, user)
                 loyalty_status_escaped = loyalty_status  # Уже готово для MarkdownV2
+                
+                # Формируем информацию о badges
+                badges_text = await format_user_badges(session, user)
+                badges_text_escaped = badges_text  # Уже готово для MarkdownV2
+                
+                # Добавляем статус админа, если есть
+                admin_status_text = ""
+                if user.admin_group:
+                    from utils.admin_permissions import get_admin_group_display
+                    admin_display = get_admin_group_display(user)
+                    if admin_display:
+                        admin_display_escaped = escape_markdown_v2(admin_display)
+                        admin_status_text = f"\n\n✨ *{admin_display_escaped}* ✨\n"
                 
                 # Новый формат текста
                 profile_text = f"""🎀 *Добро пожаловать в личный кабинет\\!*
 
 👋 Рады видеть вас, {user_name_escaped}
-{loyalty_status_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
+{admin_status_text}{loyalty_status_escaped}{badges_text_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
                 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
+                        # Основной доступ
                         [InlineKeyboardButton(text="🔐 Войти в Mom's Club", url=CLUB_CHANNEL_URL)],
+                        # Подписка и программы (отдельные строки для длинных текстов)
                         [InlineKeyboardButton(text="⚙️ Управление подпиской", callback_data="manage_subscription")],
-                        [InlineKeyboardButton(text="💎 Все про систему лояльности", callback_data="loyalty_info")],
                         [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="referral_program")],
-                        [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo_code")],
-                        [InlineKeyboardButton(text="📅 Указать дату рождения", callback_data="set_birthday")],
-                        [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")]
+                        # Информация
+                        [
+                            InlineKeyboardButton(text="💎 Лояльность", callback_data="loyalty_info"),
+                            InlineKeyboardButton(text="🏆 Достижения", callback_data="badges_info")
+                        ],
+                        # Платежи и промокод
+                        [
+                            InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
+                            InlineKeyboardButton(text="🎁 Промокод", callback_data="enter_promo_code")
+                        ],
+                        # Настройки
+                        [
+                            InlineKeyboardButton(text="📅 Дата рождения", callback_data="set_birthday"),
+                            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")
+                        ]
                     ]
                 )
                 # Отправляем баннер с подписью и кнопками
@@ -1795,10 +1963,18 @@ async def process_profile(message: types.Message):
                 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
+                        # Основное действие
                         [InlineKeyboardButton(text="💓 Присоединиться к Mom's Club 💓", callback_data="subscribe")],
-                        [InlineKeyboardButton(text="💎 Все про систему лояльности", callback_data="loyalty_info")],
-                        [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo_code")],
-                        [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")]
+                        # Информация
+                        [
+                            InlineKeyboardButton(text="💎 Лояльность", callback_data="loyalty_info"),
+                            InlineKeyboardButton(text="🏆 Достижения", callback_data="badges_info")
+                        ],
+                        # Дополнительно
+                        [
+                            InlineKeyboardButton(text="🎁 Промокод", callback_data="enter_promo_code"),
+                            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")
+                        ]
                     ]
                 )
                 
@@ -1900,7 +2076,8 @@ async def process_reviews(message: types.Message):
         
     except Exception as e:
         logger.error(f"Ошибка при отправке отзывов пользователю {message.from_user.id}: {e}")
-        await message.answer("Произошла ошибка при загрузке отзывов. Пожалуйста, попробуйте позже.")
+        error_msg = format_user_error_message(e, "при загрузке отзывов")
+        await message.answer(error_msg)
 
 
 # Обработчик для кнопки "Вперед" в карусели отзывов
@@ -2130,7 +2307,7 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
             subscription = await get_active_subscription(session, user.id)
             
             # Выбираем картинку в зависимости от уровня лояльности
-            tenure_days = calc_tenure_days(user)
+            tenure_days = await calc_tenure_days(session, user)
             level = user.current_loyalty_level or level_for_days(tenure_days)
             
             # Определяем путь к картинке на основе уровня лояльности
@@ -2165,24 +2342,50 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
                 days_text = escape_markdown_v2(days_text)
                 
                 # Формируем информацию о лояльности
-                loyalty_status = format_loyalty_status_short(user)
+                loyalty_status = await format_loyalty_status_short(session, user)
                 loyalty_status_escaped = loyalty_status  # Уже готово для MarkdownV2
+                
+                # Формируем информацию о badges
+                badges_text = await format_user_badges(session, user)
+                badges_text_escaped = badges_text  # Уже готово для MarkdownV2
+                
+                # Добавляем статус админа, если есть
+                admin_status_text = ""
+                if user.admin_group:
+                    from utils.admin_permissions import get_admin_group_display
+                    admin_display = get_admin_group_display(user)
+                    if admin_display:
+                        admin_display_escaped = escape_markdown_v2(admin_display)
+                        admin_status_text = f"\n\n✨ *{admin_display_escaped}* ✨\n"
                 
                 # Новый формат текста
                 profile_text = f"""🎀 *Добро пожаловать в личный кабинет\\!*
 
 👋 Рады видеть вас, {user_name_escaped}
-{loyalty_status_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
+{admin_status_text}{loyalty_status_escaped}{badges_text_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
                 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
+                        # Основной доступ
                         [InlineKeyboardButton(text="🔐 Войти в Mom's Club", url=CLUB_CHANNEL_URL)],
+                        # Подписка и программы (отдельные строки для длинных текстов)
                         [InlineKeyboardButton(text="⚙️ Управление подпиской", callback_data="manage_subscription")],
-                        [InlineKeyboardButton(text="💎 Все про систему лояльности", callback_data="loyalty_info")],
                         [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="referral_program")],
-                        [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo_code")],
-                        [InlineKeyboardButton(text="📅 Указать дату рождения", callback_data="set_birthday")],
-                        [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")]
+                        # Информация
+                        [
+                            InlineKeyboardButton(text="💎 Лояльность", callback_data="loyalty_info"),
+                            InlineKeyboardButton(text="🏆 Достижения", callback_data="badges_info")
+                        ],
+                        # Платежи и промокод
+                        [
+                            InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
+                            InlineKeyboardButton(text="🎁 Промокод", callback_data="enter_promo_code")
+                        ],
+                        # Настройки
+                        [
+                            InlineKeyboardButton(text="📅 Дата рождения", callback_data="set_birthday"),
+                            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")
+                        ]
                     ]
                 )
                 
@@ -2211,10 +2414,18 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
                 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
+                        # Основное действие
                         [InlineKeyboardButton(text="💓 Присоединиться к Mom's Club 💓", callback_data="subscribe")],
-                        [InlineKeyboardButton(text="💎 Все про систему лояльности", callback_data="loyalty_info")],
-                        [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo_code")],
-                        [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")]
+                        # Информация
+                        [
+                            InlineKeyboardButton(text="💎 Лояльность", callback_data="loyalty_info"),
+                            InlineKeyboardButton(text="🏆 Достижения", callback_data="badges_info")
+                        ],
+                        # Дополнительно
+                        [
+                            InlineKeyboardButton(text="🎁 Промокод", callback_data="enter_promo_code"),
+                            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_message")
+                        ]
                     ]
                 )
                 
@@ -2255,8 +2466,91 @@ async def cmd_profile(message: types.Message):
     await process_profile(message)
 
 
+# Обработчик возврата к рассылке о системе лояльности
+@user_router.callback_query(F.data == "show_broadcast_loyalty")
+async def show_broadcast_loyalty(callback: types.CallbackQuery):
+    """Обработчик для возврата к сообщению рассылки о системе лояльности"""
+    import os
+    from aiogram.types import FSInputFile
+    
+    # Путь к изображению рассылки
+    BROADCAST_IMAGE_PATH = os.path.join("media", "2025-11-03 16.57.59.jpg")
+    BROADCAST_TEXT = """💎 <b>Новое в MOMS CLUB: Система лояльности!</b> ✨
+
+Привет, красотка! 🤎
+
+Мы запускаем что-то особенное — <b>система лояльности</b>, которая станет нашей благодарностью за твою верность и участие в клубе! 
+
+Чем дольше ты с нами, тем больше бонусов получаешь 🍿
+
+🎞️ <b>Три уровня, три истории роста:</b>
+
+<b>Silver Mom ⭐</b> — 3 месяца вместе
+• Постоянная скидка <b>5%</b> на все продления подписки или
+• <b>+7 дней</b> бесплатного доступа к клубу
+
+<b>Gold Mom 🌟</b> — 6 месяцев вместе  
+• Постоянная скидка <b>10%</b> на все продления подписки или
+• <b>+14 дней</b> бесплатного доступа к клубу
+
+<b>Platinum Mom 💍</b> — 12 месяцев вместе
+• Постоянная скидка <b>15%</b> на все продления подписки или
+• <b>+30 дней</b> бесплатного доступа + особенный подарок 🎁
+
+📊 <b>Как это работает?</b>
+
+Каждый день твоей подписки приближает тебя к следующему уровню! Стаж считается только за периоды активной подписки, так что чем дольше ты с нами, тем ближе к новым бонусам 🎯
+
+🧺 <b>Твой выбор — твои бонусы</b>
+
+Когда ты достигаешь нового уровня, мы отправим тебе сообщение с выбором: ты сможешь выбрать либо постоянную скидку на все будущие продления, либо дополнительные дни доступа к клубу. Решать только тебе! 🥹🫂
+
+💡 <b>Важно знать:</b>
+
+• Все скидки <b>постоянные</b> — действуют на все будущие продления подписки
+• Стаж накапливается автоматически — просто продолжай пользоваться подпиской
+• Бонусы доступны только при активной подписке
+
+📱 <b>Где посмотреть свой статус?</b>
+
+Твой текущий статус лояльности, стаж до следующего уровня и выбранные бонусы всегда доступны в <b>Личном кабинете</b> — нажми на кнопку "👤 Личный кабинет" в главном меню бота или воспользуйся командой <code>/profile</code> 🎀
+
+Это наш способ сказать тебе "спасибо" за то, что ты часть нашего сообщества мам-креаторов 🫂🤎
+
+Растем вместе! 🍯🥨
+
+<b>Команда MOMS CLUB</b>"""
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Узнать подробнее про статус лояльности", callback_data="loyalty_info:from_broadcast")],
+            [InlineKeyboardButton(text="💰 Купить доступ по акции", callback_data="subscribe:from_broadcast")]
+        ]
+    )
+    
+    try:
+        # Удаляем текущее сообщение
+        await callback.message.delete()
+    except:
+        pass
+    
+    # Отправляем фото отдельно
+    if os.path.exists(BROADCAST_IMAGE_PATH):
+        photo = FSInputFile(BROADCAST_IMAGE_PATH)
+        await callback.message.answer_photo(photo=photo)
+    
+    # Отправляем текст с кнопками
+    await callback.message.answer(
+        BROADCAST_TEXT,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
 # Обработчик кнопки "Все про систему лояльности"
 @user_router.callback_query(F.data == "loyalty_info")
+@user_router.callback_query(F.data == "loyalty_info:from_broadcast")
 async def process_loyalty_info(callback: types.CallbackQuery):
     """Обработчик для отображения информации о системе лояльности"""
     log_message(callback.from_user.id, "loyalty_info", "callback")
@@ -2273,7 +2567,7 @@ async def process_loyalty_info(callback: types.CallbackQuery):
             return
         
         # Получаем информацию о текущем статусе пользователя
-        tenure_days = calc_tenure_days(user)
+        tenure_days = await calc_tenure_days(session, user)
         current_level = user.current_loyalty_level or level_for_days(tenure_days)
         discount = effective_discount(user)
         
@@ -2337,11 +2631,22 @@ async def process_loyalty_info(callback: types.CallbackQuery):
 • Стаж считается с момента первой оплаты
 • Бонусы доступны только при активной подписке{current_status}{next_level_info}"""
         
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
-            ]
-        )
+        # Определяем, откуда вызван (из рассылки или из профиля)
+        from_broadcast = callback.data == "loyalty_info:from_broadcast"
+        
+        # Создаем кнопки в зависимости от источника
+        if from_broadcast:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🔙 Назад к рассылке", callback_data="show_broadcast_loyalty")]
+                ]
+            )
+        else:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
+                ]
+            )
         
         try:
             await callback.message.delete()
@@ -2354,6 +2659,84 @@ async def process_loyalty_info(callback: types.CallbackQuery):
             parse_mode="HTML"
         )
         await callback.answer()
+
+
+@user_router.callback_query(F.data == "badges_info")
+async def process_badges_info(callback: types.CallbackQuery):
+    """Обработчик кнопки 'Все про достижения'"""
+    log_message(callback.from_user.id, "view_badges_info", "action")
+    
+    badges_info_text = """🏆 *Все про достижения в Mom's Club\\!*
+
+Красотка, в нашем клубе есть система достижений, которые ты можешь получить за свою активность и преданность\\!
+
+*📋 Автоматические достижения:*
+
+💳 *Первая оплата*
+Твоя первая оплата в Mom's Club\\! Это твой первый шаг в нашем сообществе 💖
+
+🤝 *Пригласила друга*
+Ты пригласила первого друга в клуб\\! Спасибо, что делишься Mom's Club с подругами ✨
+
+🌟 *Пригласила 5 друзей*
+5 подруг уже с нами благодаря тебе\\! Ты настоящий амбассадор клуба 🎀
+
+✨ *Пригласила 10 друзей*
+10 подруг уже в Mom's Club благодаря тебе\\! Это настоящий подвиг 💎
+
+📅 *Месяц в клубе*
+Ты с нами уже целый месяц\\! За это время ты стала частью нашего теплого сообщества 💕
+
+💫 *Полгода в клубе*
+Полгода вместе — это уже серьезно\\! Ты настоящая часть нашей семьи 🌟
+
+🏆 *Год в клубе*
+Целый год вместе\\! Ты прошла с нами весь путь, и мы бесконечно благодарны за твою верность 💖
+
+💎 *Верный клиент*
+5\\+ успешных платежей — это говорит о твоей преданности Mom's Club\\! Мы очень ценим таких участников 🤍
+
+👑 *Платиновый клиент*
+10\\+ успешных платежей — это настоящий рекорд\\! Ты одна из самых преданных участниц нашего клуба 🏆
+
+🔥 *Активный участник*
+Подписка продлевалась 3\\+ раза — это значит, что Mom's Club стал частью твоей жизни\\! ✨
+
+🎂 *День рождения*
+Получен подарок на день рождения\\! Мы помним о твоем особом дне 💕
+
+*💡 Как получить достижения?*
+
+Достижения выдаются автоматически при выполнении условий\\. Просто будь активной, приглашай друзей, продлевай подписку — и достижения сами найдут тебя\\! 🎀
+
+*⭐ Специальные достижения*
+
+Также есть особые достижения, которые выдаются администраторами в знак особой благодарности за вклад в развитие клуба\\. Они не выдаются автоматически, а только лично от команды Mom's Club 💖
+
+*🎯 Где посмотреть свои достижения?*
+
+Все твои достижения отображаются в личном кабинете\\. Просто открой профиль и увидишь список всех своих наград\\! 🏆
+
+Продолжай быть активной, красотка\\! Мы ценим каждую участницу нашего клуба 💕"""
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
+        ]
+    )
+    
+    try:
+        await callback.message.delete()
+    except:
+        pass
+    
+    await callback.message.answer(
+        badges_info_text,
+        reply_markup=keyboard,
+        parse_mode="MarkdownV2"
+    )
+    
+    await callback.answer()
 
 
 # Обработчик нажатия кнопки "Реферальная программа"
@@ -2411,9 +2794,13 @@ async def process_referral_program(callback: types.CallbackQuery):
         bot_username = (await callback.bot.get_me()).username
         referral_link = f"https://t.me/{bot_username}?start=ref_{referral_code}"
         
-        # Создаем клавиатуру
+        # Создаем клавиатуру с кнопкой "Поделиться"
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="📤 Поделиться ссылкой",
+                    switch_inline_query=f"Присоединяйся к Mom's Club по моей ссылке! {referral_link}"
+                )],
                 [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
             ]
         )
@@ -2427,7 +2814,7 @@ async def process_referral_program(callback: types.CallbackQuery):
             "2️⃣ Когда друг перейдет по ссылке и оформит подписку\n"
             "3️⃣ Вы и ваш друг получите <b>+7 дней</b> к вашим подпискам 🎁\n\n"
             f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{referral_link}</code>\n\n"
-            "Скопируйте эту ссылку и поделитесь с друзьями! 💌",
+            "Нажмите кнопку ниже, чтобы поделиться ссылкой! 💌",
             reply_markup=keyboard,
             parse_mode="HTML"
         )
@@ -2440,6 +2827,162 @@ async def process_copy_link(callback: types.CallbackQuery):
     link = callback.data.split(":", 1)[1]
     
     await callback.answer("Ссылка скопирована! Отправьте её друзьям.", show_alert=True)
+
+
+# Обработчик истории платежей
+@user_router.callback_query(F.data == "payment_history")
+async def process_payment_history(callback: types.CallbackQuery):
+    """Отображает историю платежей пользователя с улучшенным форматированием и статистикой"""
+    log_message(callback.from_user.id, "payment_history", "action")
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+        
+        # Получаем историю платежей
+        payments = await get_user_payment_history(session, user.id, limit=20)
+        
+        if not payments:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
+                ]
+            )
+            await callback.message.answer(
+                "💳 <b>История платежей</b>\n\n"
+                "У вас пока нет платежей.\n"
+                "Оформите подписку, чтобы начать пользоваться Mom's Club! 💕",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            return
+        
+        # Вычисляем статистику
+        total_amount = sum(p.amount for p in payments)
+        total_count = len(payments)
+        avg_amount = total_amount / total_count if total_count > 0 else 0
+        
+        # Группируем платежи по месяцам
+        payments_by_month = defaultdict(list)
+        month_names = {
+            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+        }
+        
+        for payment in payments:
+            month_key = (payment.created_at.year, payment.created_at.month)
+            payments_by_month[month_key].append(payment)
+        
+        # Формируем текст с историей
+        history_lines = [
+            "💳 <b>История платежей</b>\n",
+            f"📊 <b>Статистика:</b>\n"
+            f"• Всего платежей: <b>{total_count}</b>\n"
+            f"• Общая сумма: <b>{total_amount:.0f} ₽</b>\n"
+            f"• Средний чек: <b>{avg_amount:.0f} ₽</b>\n",
+            "━━━━━━━━━━━━━━━━━━━━\n"
+        ]
+        
+        # Сортируем месяцы по убыванию (новые первыми)
+        sorted_months = sorted(payments_by_month.keys(), reverse=True)
+        
+        for year, month in sorted_months:
+            month_payments = payments_by_month[(year, month)]
+            month_name = month_names[month]
+            history_lines.append(f"\n📅 <b>{month_name} {year}</b>\n")
+            
+            for payment in month_payments:
+                # Форматируем дату
+                date_str = payment.created_at.strftime("%d.%m.%Y %H:%M")
+                
+                # Статус платежа
+                status_emoji = {
+                    'success': '✅',
+                    'pending': '⏳',
+                    'failed': '❌'
+                }
+                status_icon = status_emoji.get(payment.status, '❓')
+                
+                # Метод оплаты (красивое отображение)
+                method_map = {
+                    'yookassa': '💳 ЮKassa',
+                    'prodamus': '💳 Prodamus',
+                    'youkassa_autopay': '🔄 Автопродление',
+                    'youkassa': '💳 ЮKassa'
+                }
+                method = method_map.get(payment.payment_method, payment.payment_method or "💳 Не указан")
+                
+                # Дни подписки
+                days_info = f" • {payment.days} дней" if payment.days else ""
+                
+                history_lines.append(
+                    f"{status_icon} <b>{date_str}</b>\n"
+                    f"   💰 <b>{payment.amount:.0f} ₽</b>{days_info}\n"
+                    f"   {method}\n"
+                )
+        
+        history_text = "\n".join(history_lines)
+        
+        # Если платежей много, ограничиваем длину сообщения
+        if len(history_text) > 4000:
+            # Оставляем статистику и первые 10 платежей
+            limited_lines = history_lines[:3]  # Заголовок и статистика
+            payment_count = 0
+            for year, month in sorted_months:
+                if payment_count >= 10:
+                    break
+                month_payments = payments_by_month[(year, month)]
+                month_name = month_names[month]
+                limited_lines.append(f"\n📅 <b>{month_name} {year}</b>\n")
+                
+                for payment in month_payments:
+                    if payment_count >= 10:
+                        break
+                    date_str = payment.created_at.strftime("%d.%m.%Y %H:%M")
+                    status_icon = '✅' if payment.status == 'success' else '⏳' if payment.status == 'pending' else '❌'
+                    method_map = {
+                        'yookassa': '💳 ЮKassa',
+                        'prodamus': '💳 Prodamus',
+                        'youkassa_autopay': '🔄 Автопродление',
+                        'youkassa': '💳 ЮKassa'
+                    }
+                    method = method_map.get(payment.payment_method, payment.payment_method or "💳 Не указан")
+                    days_info = f" • {payment.days} дней" if payment.days else ""
+                    limited_lines.append(
+                        f"{status_icon} <b>{date_str}</b>\n"
+                        f"   💰 <b>{payment.amount:.0f} ₽</b>{days_info}\n"
+                        f"   {method}\n"
+                    )
+                    payment_count += 1
+            
+            remaining = total_count - payment_count
+            if remaining > 0:
+                limited_lines.append(f"\n\n... и еще <b>{remaining}</b> платежей")
+            
+            history_text = "\n".join(limited_lines)
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
+            ]
+        )
+        
+        try:
+            await callback.message.delete()
+        except:
+            pass
+        
+        await callback.message.answer(
+            history_text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        await callback.answer()
 
 
 # --- Обработчики промокодов ---
@@ -2466,7 +3009,8 @@ async def process_promo_code_input(message: types.Message, state: FSMContext):
     async with AsyncSessionLocal() as session:
         db_user = await get_user_by_telegram_id(session, user_id)
         if not db_user:
-            await message.answer("⚠️ Произошла ошибка. Не удалось найти информацию о вас в базе данных.")
+            error_msg = format_user_error_message(Exception("Пользователь не найден в базе данных"), "при поиске пользователя")
+            await message.answer(error_msg)
             await state.clear()
             return
 
@@ -2509,7 +3053,8 @@ async def process_promo_code_input(message: types.Message, state: FSMContext):
                 if not subscription:
                     # Это не должно произойти, но на всякий случай
                     logger.error(f"Ошибка: apply_promo_code_days вернул None для user {db_user.id} и промокода {promo_code_text}")
-                    await message.answer("⚠️ Произошла ошибка при применении промокода.")
+                    error_msg = format_user_error_message(Exception("Не удалось применить промокод"), "при применении промокода")
+                    await message.answer(error_msg)
                     await state.clear()
                     return
 
@@ -2570,7 +3115,8 @@ async def process_promo_code_input(message: types.Message, state: FSMContext):
             if 'promo_code_text' in locals():
                 log_message_text = promo_code_text
             logger.error(f"Ошибка при применении промокода '{log_message_text}' для пользователя {user_id}: {e}", exc_info=True)
-            await message.answer("⚠️ Произошла серьезная ошибка при применении промокода. Свяжитесь с поддержкой.")
+            error_msg = format_user_error_message(e, "при применении промокода")
+            await message.answer(error_msg)
             await state.clear()
 
 # Обработчик отмены ввода промокода
@@ -2630,7 +3176,7 @@ async def process_manage_subscription(callback: types.CallbackQuery):
         profile_info_text += f"🔐 Статус подписки: *Активна* ✅\n\n"
 
         # Формируем информацию о лояльности
-        loyalty_status_detailed = format_loyalty_status_detailed(user)
+        loyalty_status_detailed = await format_loyalty_status_detailed(session, user)
         # Экранирование уже выполнено в функции format_loyalty_status_detailed
         loyalty_status_escaped = loyalty_status_detailed
 
@@ -2751,10 +3297,31 @@ async def process_request_cancel_autorenewal(callback: types.CallbackQuery):
             from bot import bot
             await send_cancellation_request_notifications(bot, user, request.id)
             
-            await callback.answer(
-                "✅ Ваша заявка принята! С вами свяжется служба заботы для уточнения деталей.", 
-                show_alert=False
+            await callback.answer("✅ Заявка создана", show_alert=False)
+            
+            # Отправляем полноценное сообщение пользователю
+            support_username = "momsclubsupport"
+            confirmation_text = (
+                "✅ <b>Ваша заявка принята!</b>\n\n"
+                "С вами свяжется служба заботы для уточнения деталей.\n\n"
+                "Если вы хотите ускорить рассмотрение отмены автопродления, напишите нам в службу заботы 👇"
             )
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💬 Написать в службу заботы", 
+                    url=f"https://t.me/{support_username}"
+                )]
+            ])
+            
+            try:
+                await callback.message.answer(
+                    confirmation_text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.error(f"Ошибка отправки подтверждения заявки: {e}")
             
             # Обновляем сообщение
             await process_manage_subscription(callback)
@@ -2926,7 +3493,8 @@ async def process_birthday_input(message: types.Message, state: FSMContext):
         user_id_db = data.get("user_id_db_for_birthday")
         
         if not user_id_db:
-            await message.answer("⚠️ Произошла ошибка. Пожалуйста, вернитесь в личный кабинет и попробуйте снова.")
+            error_msg = format_user_error_message(Exception("Данные сессии потеряны"), "при сохранении даты рождения")
+            await message.answer(error_msg)
             await state.clear()
             return
         
@@ -3097,7 +3665,8 @@ async def process_subscription_extend_payment(callback: types.CallbackQuery, sta
                 )
                 
                 if not payment_url or not payment_id:
-                    await callback.answer("Ошибка создания платежа. Попробуйте позже.", show_alert=True)
+                    error_msg = format_user_error_message(Exception("Не удалось создать ссылку на оплату"), "при создании платежа для продления")
+                    await callback.answer(error_msg, show_alert=True)
                     return
                 
                 # Создаем запись о платеже (сохраняем исходную цену и скидку)
@@ -3160,7 +3729,8 @@ async def process_subscription_extend_payment(callback: types.CallbackQuery, sta
                     
         except Exception as e:
             logging.error(f"Ошибка в process_subscription_extend_payment: {e}", exc_info=True)
-            await callback.answer("Произошла ошибка при обработке платежа. Попробуйте позже.", show_alert=True)
+            error_msg = format_user_error_message(e, "при обработке платежа для продления")
+            await callback.answer(error_msg, show_alert=True)
         
         # Убираем часы загрузки на кнопке
         await callback.answer()
@@ -3228,7 +3798,8 @@ async def process_phone(message: types.Message, state: FSMContext):
                 )
                 
                 if not payment_url or not payment_id:
-                    await message.answer("Ошибка создания платежа. Пожалуйста, попробуйте позже.")
+                    error_msg = format_user_error_message(Exception("Не удалось создать ссылку на оплату"), "при создании платежа")
+                    await message.answer(error_msg)
                     return
                 
                 # Создаем запись о платеже
@@ -3269,7 +3840,8 @@ async def process_phone(message: types.Message, state: FSMContext):
                 )
         except Exception as e:
             logging.error(f"Ошибка при возврате к оплате после ввода телефона: {e}", exc_info=True)
-            await message.answer("Произошла ошибка. Пожалуйста, вернитесь в личный кабинет и попробуйте снова.", reply_markup=main_keyboard)
+            error_msg = format_user_error_message(e, "при обработке данных для оплаты")
+            await message.answer(error_msg, reply_markup=main_keyboard)
     elif came_from == "confirm_extension":
         # Если пришли со страницы продления, возвращаем обратно
         await state.clear()
@@ -3497,11 +4069,13 @@ async def process_loyalty_benefit_choice(callback: types.CallbackQuery):
                     parse_mode="HTML"
                 )
             else:
-                await callback.answer("Произошла ошибка при применении бонуса", show_alert=True)
+                error_msg = format_user_error_message(Exception("Не удалось применить бонус"), "при применении бонуса лояльности")
+                await callback.answer(error_msg, show_alert=True)
                 
     except Exception as e:
         logger.error(f"Ошибка при обработке выбора бонуса лояльности: {e}", exc_info=True)
-        await callback.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
+        error_msg = format_user_error_message(e, "при выборе бонуса лояльности")
+        await callback.answer(error_msg, show_alert=True)
 
     # Заменяем существующий обработчик для всех callback_data с back_to_profile
 @user_router.callback_query(lambda c: "back_to_profile" in c.data)

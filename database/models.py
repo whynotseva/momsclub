@@ -36,6 +36,9 @@ class User(Base):
     pending_loyalty_reward = Column(Boolean, default=False)  # Флаг ожидания выбора бонуса
     gift_due = Column(Boolean, default=False)  # Флаг подарка для Platinum
     
+    # Поле для группы администратора
+    admin_group = Column(String(50), nullable=True)  # 'creator', 'developer', 'curator' или NULL для обычных пользователей
+    
     # Отношение к подпискам
     subscriptions = relationship("Subscription", back_populates="user")
     
@@ -54,14 +57,14 @@ class Subscription(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     start_date = Column(DateTime, server_default=func.now())
     end_date = Column(DateTime, nullable=False)
-    price = Column(Integer, nullable=False)  # Цена в копейках
+    price = Column(Integer, nullable=False)  # Цена в рублях
     is_active = Column(Boolean, default=True)
     payment_id = Column(String(255), nullable=True)  # Идентификатор платежа
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     next_retry_attempt_at = Column(DateTime, nullable=True)  # Дата и время следующей попытки автосписания (NULL если не запланировано)
     autopayment_fail_count = Column(Integer, default=0)      # Счетчик неудачных попыток автоплатежа
-    renewal_price = Column(Integer, nullable=True)  # Цена для следующего автосписания (в копейках)
+    renewal_price = Column(Integer, nullable=True)  # Цена для следующего автосписания (в рублях)
     renewal_duration_days = Column(Integer, nullable=True)  # Длительность следующего автопродления (в днях)
     subscription_id = Column(String(255), nullable=True)  # ID подписки в системе Prodamus
     
@@ -83,7 +86,7 @@ class PaymentLog(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     subscription_id = Column(Integer, ForeignKey("subscriptions.id", ondelete="SET NULL"), nullable=True)
-    amount = Column(Integer, nullable=False)  # Сумма в копейках
+    amount = Column(Integer, nullable=False)  # Сумма в рублях
     status = Column(String(50), nullable=False)  # success, pending, failed
     payment_method = Column(String(100), nullable=True)
     transaction_id = Column(String(255), nullable=True)
@@ -275,3 +278,24 @@ class LoyaltyEvent(Base):
     
     def __repr__(self):
         return f"<LoyaltyEvent {self.id} for user {self.user_id} kind={self.kind}>"
+
+
+class UserBadge(Base):
+    """Модель для достижений (badges) пользователей"""
+    __tablename__ = "user_badges"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    badge_type = Column(String(50), nullable=False)  # 'first_payment', 'referral_1', 'referral_5', 'year_in_club'
+    earned_at = Column(DateTime, server_default=func.now())  # Когда получен badge
+    
+    # Отношение к пользователю
+    user = relationship("User")
+    
+    # Уникальность: один badge одного типа для одного пользователя
+    __table_args__ = (
+        UniqueConstraint('user_id', 'badge_type', name='uix_user_badge'),
+    )
+    
+    def __repr__(self):
+        return f"<UserBadge {self.badge_type} for user {self.user_id}>"

@@ -98,11 +98,17 @@ async def get_or_create_user(db: AsyncSession, telegram_id: int, username: str =
     
     return user
 
-async def update_user(db: AsyncSession, telegram_id: int, **kwargs):
-    """Обновляет данные пользователя"""
+async def update_user(db: AsyncSession, telegram_id: int, commit: bool = True, **kwargs):
+    """
+    Обновляет данные пользователя
+    
+    Args:
+        commit: Если False, не выполняет commit (для использования в транзакциях)
+    """
     query = update(User).where(User.telegram_id == telegram_id).values(**kwargs)
     await db.execute(query)
-    await db.commit()
+    if commit:
+        await db.commit()
     
     return await get_user_by_telegram_id(db, telegram_id)
 
@@ -179,8 +185,14 @@ async def create_subscription(db: AsyncSession,
                               payment_id: str = None,
                               renewal_price: Optional[int] = None,
                               renewal_duration_days: Optional[int] = None,
-                              subscription_id: Optional[str] = None):
-    """Создает новую подписку для пользователя, ПРОВЕРЯЯ наличие активной."""
+                              subscription_id: Optional[str] = None,
+                              commit: bool = True):
+    """
+    Создает новую подписку для пользователя, ПРОВЕРЯЯ наличие активной.
+    
+    Args:
+        commit: Если False, не выполняет commit (для использования в транзакциях)
+    """
     # Проверяем, нет ли уже активной подписки
     existing_active_sub = await get_active_subscription(db, user_id)
     if existing_active_sub:
@@ -202,8 +214,9 @@ async def create_subscription(db: AsyncSession,
     )
     
     db.add(subscription)
-    await db.commit()
-    await db.refresh(subscription)
+    if commit:
+        await db.commit()
+        await db.refresh(subscription)
     return subscription
 
 async def get_active_subscription(db: AsyncSession, user_id: int):
@@ -255,9 +268,15 @@ async def extend_subscription(db: AsyncSession,
                               payment_id: str = None,
                               renewal_price: Optional[int] = None, # Цена этого платежа, станет ценой автопродления
                               renewal_duration_days: Optional[int] = None, # Длительность этого платежа, станет длительностью автопродления
-                              subscription_id: Optional[str] = None # Добавляем subscription_id для Prodamus
+                              subscription_id: Optional[str] = None, # Добавляем subscription_id для Prodamus
+                              commit: bool = True
                               ):
-    """Продлевает подписку пользователя или создает новую, обновляя данные для автопродления."""
+    """
+    Продлевает подписку пользователя или создает новую, обновляя данные для автопродления.
+    
+    Args:
+        commit: Если False, не выполняет commit (для использования в транзакциях)
+    """
     active_subscription = await get_active_subscription(db, user_id)
     
     # Если renewal_price или renewal_duration_days не переданы явно,
@@ -299,8 +318,9 @@ async def extend_subscription(db: AsyncSession,
             .values(**update_values)
         )
         await db.execute(query)
-        await db.commit()
-        await db.refresh(active_subscription)
+        if commit:
+            await db.commit()
+            await db.refresh(active_subscription)
         
         if is_safe_migration:
             logger.info(f"Миграция завершена. Подписка ID {active_subscription.id} теперь управляется Prodamus (subscription_id: {subscription_id})")
@@ -317,10 +337,11 @@ async def extend_subscription(db: AsyncSession,
             user_id, 
             end_date, 
             price, # Цена этого первого платежа
-            payment_id,
+            payment_id=payment_id,  # Исправлено: именованный аргумент
             renewal_price=actual_renewal_price, 
             renewal_duration_days=actual_renewal_duration_days,
-            subscription_id=subscription_id # Передаем subscription_id для новых подписок
+            subscription_id=subscription_id,  # Передаем subscription_id для новых подписок
+            commit=commit
         )
 
 # Функции для логирования платежей
@@ -328,13 +349,15 @@ async def create_payment_log(db: AsyncSession, user_id: int, amount: int, status
                             subscription_id: int = None, payment_method: str = None, 
                             transaction_id: str = None, details: str = None, 
                             payment_label: str = None, days: Optional[int] = None,
-                            payment_datetime: Optional[datetime] = None):
+                            payment_datetime: Optional[datetime] = None,
+                            commit: bool = True):
     """
     Создает запись о платеже в логе с дополнительной меткой платежа и количеством дней.
     
     Args:
         payment_datetime: Реальное время платежа от платежной системы (если доступно).
                          Если не указано, используется текущее время.
+        commit: Если False, не выполняет commit (для использования в транзакциях)
     """
     from datetime import datetime
     
@@ -379,8 +402,9 @@ async def create_payment_log(db: AsyncSession, user_id: int, amount: int, status
         )
     
     db.add(payment_log)
-    await db.commit()
-    await db.refresh(payment_log)
+    if commit:
+        await db.commit()
+        await db.refresh(payment_log)
     return payment_log
 
 # Функции для получения статистики
@@ -427,8 +451,13 @@ async def get_payment_by_transaction_id(db: AsyncSession, transaction_id: str):
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
-async def update_payment_status(db: AsyncSession, payment_id: int, status: str):
-    """Обновляет статус платежа"""
+async def update_payment_status(db: AsyncSession, payment_id: int, status: str, commit: bool = True):
+    """
+    Обновляет статус платежа
+    
+    Args:
+        commit: Если False, не выполняет commit (для использования в транзакциях)
+    """
     values = {"status": status}
     
     # Если статус успешный, устанавливаем флаг подтверждения
@@ -441,17 +470,24 @@ async def update_payment_status(db: AsyncSession, payment_id: int, status: str):
         .values(**values)
     )
     await db.execute(query)
-    await db.commit()
+    if commit:
+        await db.commit()
     
-async def update_payment_subscription(db: AsyncSession, payment_id: int, subscription_id: int):
-    """Обновляет привязку платежа к подписке"""
+async def update_payment_subscription(db: AsyncSession, payment_id: int, subscription_id: int, commit: bool = True):
+    """
+    Обновляет привязку платежа к подписке
+    
+    Args:
+        commit: Если False, не выполняет commit (для использования в транзакциях)
+    """
     query = (
         update(PaymentLog)
         .where(PaymentLog.id == payment_id)
         .values(subscription_id=subscription_id)
     )
     await db.execute(query)
-    await db.commit()
+    if commit:
+        await db.commit()
 
 # Функции для работы с истекшими подписками
 async def get_all_expired_subscriptions(db: AsyncSession):
@@ -807,10 +843,13 @@ async def has_active_subscription(db: AsyncSession, user_id: int):
 #         return None
 
 # Функция для продления подписки на указанное количество дней (для реферальной программы)
-async def extend_subscription_days(db: AsyncSession, user_id: int, days: int, reason: str = "referral_bonus"):
+async def extend_subscription_days(db: AsyncSession, user_id: int, days: int, reason: str = "referral_bonus", commit: bool = True):
     """
     Продлевает подписку пользователя на указанное количество дней
     Возвращает True, если успешно, False в противном случае
+    
+    Args:
+        commit: Если False, не выполняет commit (для использования в транзакциях)
     """
     # Используем глобальный логгер для платежей
     payment_logger = logging.getLogger("payments")
@@ -852,7 +891,6 @@ async def extend_subscription_days(db: AsyncSession, user_id: int, days: int, re
             .values(end_date=new_end_date)
         )
         await db.execute(query)
-        await db.commit()
         
         # Логируем бонусное продление
         payment_log = PaymentLog(
@@ -865,7 +903,9 @@ async def extend_subscription_days(db: AsyncSession, user_id: int, days: int, re
             details=f"Бонусное продление на {days} дней. Причина: {reason}"
         )
         db.add(payment_log)
-        await db.commit()
+        
+        if commit:
+            await db.commit()
         
         logger.info(f"Успешно продлена подписка для пользователя {user_id}")
         payment_logger.info(f"Подписка успешно продлена: пользователь {user_id}, новая дата окончания {new_end_date}, причина: {reason}")

@@ -217,3 +217,98 @@ async def safe_edit_message(callback, text, reply_markup=None, parse_mode=None):
             # Если ничего не получилось, показываем alert
             await callback.answer("Произошла ошибка при обновлении сообщения", show_alert=True)
             return False
+
+
+# ===== Хелперы форматирования и стандартных клавиатур для админки =====
+def format_user_error_message(error: Exception, context: str = "") -> str:
+    """
+    Форматирует сообщение об ошибке для пользователя в стиле сообщества.
+    
+    Args:
+        error: Объект исключения
+        context: Контекст ошибки (например, "при создании платежа", "при проверке подписки")
+        
+    Returns:
+        str: Понятное сообщение об ошибке для пользователя
+    """
+    error_str = str(error).lower()
+    
+    # Определяем тип ошибки и возвращаем понятное сообщение
+    if "payment" in error_str or "платеж" in error_str or "payment" in context.lower():
+        if "timeout" in error_str or "connection" in error_str:
+            return (
+                "💔 Красотка, произошла ошибка при создании платежа.\n\n"
+                "Похоже, возникли проблемы с подключением к платежной системе. "
+                "Попробуй еще раз через минуту — обычно это помогает! 💖\n\n"
+                "Если проблема повторится, напиши мне — я обязательно помогу! 🩷"
+            )
+        else:
+            return (
+                "💔 Красотка, не удалось создать платеж.\n\n"
+                "Попробуй еще раз через минуту. Если проблема повторится, "
+                "напиши мне — я обязательно помогу разобраться! 💖"
+            )
+    
+    elif "subscription" in error_str or "подписк" in error_str or "subscription" in context.lower():
+        return (
+            "💔 Красотка, произошла ошибка при работе с подпиской.\n\n"
+            "Попробуй еще раз через минуту. Если проблема повторится, "
+            "напиши мне — я обязательно помогу! 💖"
+        )
+    
+    elif "database" in error_str or "база данных" in error_str or "connection" in error_str:
+        return (
+            "💔 Красотка, произошла временная ошибка.\n\n"
+            "Попробуй еще раз через минуту — обычно это помогает! 💖\n\n"
+            "Если проблема повторится, напиши мне — я обязательно помогу! 🩷"
+        )
+    
+    elif "timeout" in error_str or "timed out" in error_str:
+        return (
+            "💔 Красотка, операция заняла слишком много времени.\n\n"
+            "Попробуй еще раз — обычно это помогает! 💖"
+        )
+    
+    elif "network" in error_str or "connection" in error_str or "unreachable" in error_str:
+        return (
+            "💔 Красотка, возникли проблемы с подключением.\n\n"
+            "Проверь интернет-соединение и попробуй еще раз через минуту. "
+            "Если проблема повторится, напиши мне! 💖"
+        )
+    
+    else:
+        # Общее сообщение для неизвестных ошибок
+        return (
+            "💔 Красотка, произошла неожиданная ошибка.\n\n"
+            "Попробуй еще раз через минуту. Если проблема повторится, "
+            "напиши мне — я обязательно помогу разобраться! 💖"
+        )
+
+
+def fmt_date(dt):
+    """Возвращает дату в формате dd.mm.yyyy либо 'N/A'."""
+    try:
+        return dt.strftime('%d.%m.%Y') if dt else 'N/A'
+    except Exception:
+        return 'N/A'
+
+
+def html_kv(label: str, value: str) -> str:
+    """Пара 'ключ: значение' в HTML-стиле."""
+    return f"<b>{label}:</b> {value}"
+
+
+def success(text: str) -> str:
+    return f"✅ {text}"
+
+
+def error(text: str) -> str:
+    return f"❌ {text}"
+
+
+def admin_nav_back(callback_data: str = "admin_back") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« Назад", callback_data=callback_data)]])
+
+
+def admin_nav_cancel(callback_data: str = "admin_cancel") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« Отмена", callback_data=callback_data)]])

@@ -19,10 +19,11 @@ SQL_ECHO = os.getenv("SQL_ECHO", "False").lower() == "true"
 engine = create_async_engine(DATABASE_URL, echo=SQL_ECHO, connect_args={"check_same_thread": False})
 
 # Создание сессии для работы с базой данных
-# ИСПРАВЛЕНО: expire_on_commit=True для предотвращения использования устаревших данных
-# После commit все объекты в сессии помечаются как "expired" и будут перезагружены при следующем доступе
-# Это гарантирует актуальность данных, но требует явного session.refresh() для немедленного доступа
-AsyncSessionLocal = sessionmaker(engine, expire_on_commit=True, class_=AsyncSession)
+# ИСПРАВЛЕНО: expire_on_commit=False для предотвращения greenlet ошибок
+# С expire_on_commit=False объекты НЕ становятся expired после commit
+# Это безопасно в контексте async кода, так как каждый запрос использует свою сессию
+# КРИТИЧНО для работы с циклами где используется commit внутри итерации
+AsyncSessionLocal = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 # Базовый класс для моделей
 Base = declarative_base()

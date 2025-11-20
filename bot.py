@@ -308,11 +308,24 @@ async def loyalty_nightly_job():
                 
                 loyalty_logger.info(f"👥 Найдено пользователей с first_payment_date: {len(users)}")
                 
+                # ИСПРАВЛЕНО: Сохраняем ВСЕ атрибуты ВСЕХ пользователей ДО начала циклов
+                # Это критично для защиты от greenlet после commit в цикле
+                users_data = []
+                for user in users:
+                    users_data.append({
+                        'user_object': user,
+                        'user_id': user.id,
+                        'user_telegram_id': user.telegram_id,
+                        'current_loyalty_level': user.current_loyalty_level,
+                        'pending_loyalty_reward': user.pending_loyalty_reward
+                    })
+                
                 # Проверяем и выдаем badges для всех пользователей
                 badges_logger = logging.getLogger('badges')
                 badges_granted_count = 0
-                for user in users:
-                    user_id = user.id
+                for user_data in users_data:
+                    user = user_data['user_object']
+                    user_id = user_data['user_id']
                     try:
                         # ИСПРАВЛЕНО: убран refresh - он вызывает greenlet ошибки
                         granted_badges = await check_and_grant_badges(session, user)
@@ -330,7 +343,7 @@ async def loyalty_nightly_job():
                 
                 # Статистика по уровням
                 stats = {
-                    'total': len(users),
+                    'total': len(users_data),
                     'with_active_sub': 0,
                     'without_active_sub': 0,
                     'upgraded': 0,
@@ -343,12 +356,14 @@ async def loyalty_nightly_job():
                 upgraded_count = 0
                 pending_notified_count = 0
                 
-                for idx, user in enumerate(users, 1):
-                    # ИСПРАВЛЕНО: сохраняем все атрибуты в начале для защиты от greenlet
-                    user_id = user.id
-                    user_telegram_id = user.telegram_id
-                    current_loyalty_level = user.current_loyalty_level
-                    pending_loyalty_reward = user.pending_loyalty_reward
+                # Обрабатываем тех же пользователей (уже с сохраненными атрибутами)
+                for idx, user_data in enumerate(users_data, 1):
+                    # Используем сохраненные данные
+                    user = user_data['user_object']
+                    user_id = user_data['user_id']
+                    user_telegram_id = user_data['user_telegram_id']
+                    current_loyalty_level = user_data['current_loyalty_level']
+                    pending_loyalty_reward = user_data['pending_loyalty_reward']
                     
                     try:
                         # Получаем стаж и текущий уровень для логирования
@@ -369,14 +384,14 @@ async def loyalty_nightly_job():
                             stats['by_level'][current_level] += 1
                         
                         loyalty_logger.debug(
-                            f"[{idx}/{len(users)}] user_id={user_id} (telegram_id={user_telegram_id}): "
+                            f"[{idx}/{len(users_data)}] user_id={user_id} (telegram_id={user_telegram_id}): "
                             f"стаж={tenure_days} дней, уровень={current_level}, "
                             f"активная подписка={'✅' if has_active_sub else '❌'}, "
-                            f"pending_reward={'✅' if user.pending_loyalty_reward else '❌'}"
+                            f"pending_reward={'✅' if pending_loyalty_reward else '❌'}"
                         )
                         
                         # Проверяем и повышаем уровень, если нужно
-                        old_level = user.current_loyalty_level or 'none'
+                        old_level = current_loyalty_level or 'none'
                         new_level = await upgrade_level_if_needed(session, user)
                         
                         if new_level:

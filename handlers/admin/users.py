@@ -31,7 +31,7 @@ from utils.constants import (
     SPECIAL_BADGES,
     VALID_BADGE_TYPES,
 )
-from utils.admin_permissions import is_admin, can_manage_admins
+from utils.admin_permissions import is_admin, can_manage_admins, get_admin_group_display
 from utils.group_manager import GroupManager
 from utils.helpers import fmt_date, html_kv, admin_nav_back, escape_markdown_v2, log_message
 from database.config import AsyncSessionLocal
@@ -282,19 +282,28 @@ async def process_user_id(message: types.Message, state: FSMContext):
             
             # Проверяем статус пользователя в группе
             try:
-                member = await message.bot.get_chat_member(CLUB_GROUP_ID, user.telegram_id)
-                status_mapping = {
-                    "creator": ("👑", "Создатель группы"),
-                    "administrator": ("⚡", "Администратор"),
-                    "member": ("✅", "В группе"),
-                    "restricted": ("⚠️", "Ограничен"),
-                    "left": ("❌", "Покинул группу"),
-                    "kicked": ("🚫", "Исключён из группы")
-                }
-                emoji, status_text = status_mapping.get(member.status, ("❓", member.status))
-                group_status_info = f"👥 Статус в группе: {emoji} {status_text}\n"
-                user_info_lines.append("")
-                user_info_lines.append(group_status_info)
+                # Сначала проверяем роль админа из БД
+                admin_role = get_admin_group_display(user)
+                if admin_role:
+                    # Если есть admin_group - показываем роль
+                    group_status_info = f"👥 Статус в группе: {admin_role}\n"
+                    user_info_lines.append("")
+                    user_info_lines.append(group_status_info)
+                else:
+                    # Если нет роли - проверяем статус через Telegram API
+                    member = await message.bot.get_chat_member(CLUB_GROUP_ID, user.telegram_id)
+                    status_mapping = {
+                        "creator": ("👑", "Создатель группы"),
+                        "administrator": ("⚡", "Администратор"),
+                        "member": ("✅", "В группе"),
+                        "restricted": ("⚠️", "Ограничен"),
+                        "left": ("❌", "Покинул группу"),
+                        "kicked": ("🚫", "Исключён из группы")
+                    }
+                    emoji, status_text = status_mapping.get(member.status, ("❓", member.status))
+                    group_status_info = f"👥 Статус в группе: {emoji} {status_text}\n"
+                    user_info_lines.append("")
+                    user_info_lines.append(group_status_info)
             except Exception as e:
                 logger.warning(f"Не удалось проверить статус пользователя {user.telegram_id} в группе: {e}")
                 user_info_lines.append("")
@@ -462,17 +471,24 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
         # Проверяем статус пользователя в группе
         group_status_info = ""
         try:
-            member = await callback.bot.get_chat_member(CLUB_GROUP_ID, user.telegram_id)
-            status_mapping = {
-                "creator": ("👑", "Создатель группы"),
-                "administrator": ("⚡", "Администратор"),
-                "member": ("✅", "В группе"),
-                "restricted": ("⚠️", "Ограничен"),
-                "left": ("❌", "Покинул группу"),
-                "kicked": ("🚫", "Исключён из группы")
-            }
-            emoji, status_text = status_mapping.get(member.status, ("❓", member.status))
-            group_status_info = f"👥 Статус в группе: {emoji} {status_text}\n"
+            # Сначала проверяем роль админа из БД
+            admin_role = get_admin_group_display(user)
+            if admin_role:
+                # Если есть admin_group - показываем роль
+                group_status_info = f"👥 Статус в группе: {admin_role}\n"
+            else:
+                # Если нет роли - проверяем статус через Telegram API
+                member = await callback.bot.get_chat_member(CLUB_GROUP_ID, user.telegram_id)
+                status_mapping = {
+                    "creator": ("👑", "Создатель группы"),
+                    "administrator": ("⚡", "Администратор"),
+                    "member": ("✅", "В группе"),
+                    "restricted": ("⚠️", "Ограничен"),
+                    "left": ("❌", "Покинул группу"),
+                    "kicked": ("🚫", "Исключён из группы")
+                }
+                emoji, status_text = status_mapping.get(member.status, ("❓", member.status))
+                group_status_info = f"👥 Статус в группе: {emoji} {status_text}\n"
         except Exception as e:
             logger.warning(f"Не удалось проверить статус пользователя {user.telegram_id} в группе: {e}")
             group_status_info = "👥 Статус в группе: ❓ Не удалось проверить\n"

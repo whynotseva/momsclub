@@ -13,6 +13,7 @@ from database.config import AsyncSessionLocal
 from database.crud import get_user_by_telegram_id
 from database.models import User, PaymentLog
 from utils.admin_permissions import is_admin
+from loyalty.levels import calc_tenure_days
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ async def calculate_user_finance_stats(session, user: User) -> dict:
             'autopay_count': 0,
             'autopay_percentage': 0,
             'first_payment_date': None,
-            'days_with_us': 0
+            'tenure_days': 0
         }
     
     # Подсчёт статистики
@@ -63,13 +64,12 @@ async def calculate_user_finance_stats(session, user: User) -> dict:
     last_payment_amount = last_payment.amount
     last_payment_date = last_payment.created_at
     
-    # Дней с нами - используем User.first_payment_date для согласованности с лояльностью
+    # Реальный стаж - используем calc_tenure_days (как в системе лояльности)
+    # Это считает только дни АКТИВНЫХ подписок, без перерывов
+    tenure_days = await calc_tenure_days(session, user)
+    
+    # Дата первой оплаты для отображения
     first_payment_date = user.first_payment_date
-    if first_payment_date:
-        # Считаем как в системе лояльности - сравниваем только даты без времени
-        days_with_us = (datetime.now().date() - first_payment_date.date()).days
-    else:
-        days_with_us = 0
     
     # Автоплатежи
     autopay_count = sum(1 for p in payments if p.payment_method == 'yookassa_autopay')
@@ -84,7 +84,7 @@ async def calculate_user_finance_stats(session, user: User) -> dict:
         'autopay_count': autopay_count,
         'autopay_percentage': autopay_percentage,
         'first_payment_date': first_payment_date,
-        'days_with_us': days_with_us
+        'tenure_days': tenure_days
     }
 
 
@@ -122,10 +122,11 @@ async def show_user_finance(callback: CallbackQuery):
             if stats['payment_count'] == 0:
                 text += "📭 <i>Платежей пока нет</i>\n"
             else:
-                # Дней с нами
-                if stats['days_with_us'] > 0:
-                    text += f"📅 <b>С нами:</b> {stats['days_with_us']} дн. "
-                    text += f"(с {stats['first_payment_date'].strftime('%d.%m.%Y')})\n\n"
+                # Стаж и дата регистрации
+                if stats['first_payment_date']:
+                    text += f"📅 <b>Клиент с:</b> {stats['first_payment_date'].strftime('%d.%m.%Y')}\n"
+                    text += f"📊 <b>Стаж:</b> {stats['tenure_days']} дн. "
+                    text += "<i>(только активные дни)</i>\n\n"
                 
                 # Общая статистика
                 text += f"💵 <b>Всего оплачено:</b> {stats['total_amount']:,.0f}₽\n"

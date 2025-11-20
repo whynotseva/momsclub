@@ -1798,14 +1798,9 @@ async def process_payment_history(callback: CallbackQuery):
                     text += f"   {method_emoji} Способ: {payment.payment_method or 'не указан'}\n"
                     text += f"   💰 Сумма: {payment.amount}₽\n"
                     
-                    # Проверяем есть ли скидка (если сумма меньше полной)
-                    from utils.constants import SUBSCRIPTION_PRICE
-                    if payment.amount < SUBSCRIPTION_PRICE:
-                        discount = SUBSCRIPTION_PRICE - payment.amount
-                        discount_percent = int((discount / SUBSCRIPTION_PRICE) * 100)
-                        text += f"   🎁 Скидка: {discount}₽ ({discount_percent}%)\n"
-                    else:
-                        text += f"   💯 Полная оплата\n"
+                    # ID транзакции для идентификации
+                    if payment.transaction_id:
+                        text += f"   � ID: <code>{payment.transaction_id}</code>\n"
                     
                     text += f"   📅 Дата: {payment.created_at.strftime('%d.%m.%Y %H:%M')}\n"
                     

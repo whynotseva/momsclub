@@ -350,6 +350,7 @@ async def loyalty_nightly_job():
                     'pending_notified': 0,
                     'pending_skipped_no_sub': 0,
                     'by_level': {'none': 0, 'silver': 0, 'gold': 0, 'platinum': 0},
+                    'by_level_active': {'none': 0, 'silver': 0, 'gold': 0, 'platinum': 0},  # Только с активной подпиской
                     'errors': 0
                 }
                 
@@ -376,10 +377,13 @@ async def loyalty_nightly_job():
                         
                         if has_active_sub:
                             stats['with_active_sub'] += 1
+                            # Подсчитываем уровни только для пользователей с активной подпиской
+                            if current_level in stats['by_level_active']:
+                                stats['by_level_active'][current_level] += 1
                         else:
                             stats['without_active_sub'] += 1
                         
-                        # Подсчитываем статистику по уровням
+                        # Подсчитываем статистику по уровням (для всех)
                         if current_level in stats['by_level']:
                             stats['by_level'][current_level] += 1
                         
@@ -539,19 +543,17 @@ async def loyalty_nightly_job():
                 
                 # ========== ОТПРАВКА ОТЧЁТА АДМИНАМ ==========
                 try:
-                    # Формируем красивый отчёт
+                    # Формируем красивый отчёт (только пользователи с активной подпиской)
                     report_text = (
-                        f"📊 <b>Отчёт о проверке лояльности</b>\n"
+                        f"📊 <b>Отчёт о лояльности (активные подписки)</b>\n"
                         f"🕐 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')} МСК\n"
                         f"{'─' * 30}\n\n"
-                        f"👥 <b>Пользователей проверено:</b> {stats['total']}\n"
-                        f"✅ С активной подпиской: {stats['with_active_sub']}\n"
-                        f"❌ Без подписки: {stats['without_active_sub']}\n\n"
-                        f"📈 <b>Распределение по уровням:</b>\n"
-                        f"   • None: {stats['by_level']['none']}\n"
-                        f"   • 🥈 Silver: {stats['by_level']['silver']}\n"
-                        f"   • 🥇 Gold: {stats['by_level']['gold']}\n"
-                        f"   • 💎 Platinum: {stats['by_level']['platinum']}\n\n"
+                        f"👥 <b>Пользователей с активной подпиской:</b> {stats['with_active_sub']}\n\n"
+                        f"📈 <b>Распределение по уровням лояльности:</b>\n"
+                        f"   • None: {stats['by_level_active']['none']}\n"
+                        f"   • 🥈 Silver: {stats['by_level_active']['silver']}\n"
+                        f"   • 🥇 Gold: {stats['by_level_active']['gold']}\n"
+                        f"   • 💎 Platinum: {stats['by_level_active']['platinum']}\n\n"
                     )
                     
                     # Добавляем информацию о повышениях

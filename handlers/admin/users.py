@@ -355,11 +355,15 @@ async def process_user_id(message: types.Message, state: FSMContext):
                 ),
             ])
             
-            # Кнопка "История платежей"
+            # Кнопки "История платежей" и "Финансы"
             keyboard_buttons.append([
                 InlineKeyboardButton(
                     text="💳 История платежей",
                     callback_data=f"admin_payment_history:{user.telegram_id}",
+                ),
+                InlineKeyboardButton(
+                    text="💰 Финансы",
+                    callback_data=f"admin_user_finance:{user.telegram_id}",
                 ),
             ])
             
@@ -582,6 +586,10 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
                     InlineKeyboardButton(
                         text="💳 История платежей",
                         callback_data=f"admin_payment_history:{user.telegram_id}",
+                    ),
+                    InlineKeyboardButton(
+                        text="💰 Финансы",
+                        callback_data=f"admin_user_finance:{user.telegram_id}",
                     ),
                 ],
                 [ban_unban_btn],

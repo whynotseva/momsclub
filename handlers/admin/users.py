@@ -52,7 +52,7 @@ from database.crud import (
     send_badge_notification,
     has_user_badge,
 )
-from database.models import User, Subscription
+from database.models import User, Subscription, PaymentLog
 from loyalty.levels import calc_tenure_days, level_for_days
 from loyalty.service import effective_discount
 from sqlalchemy import update, select, and_, func
@@ -325,6 +325,14 @@ async def process_user_id(message: types.Message, state: FSMContext):
                 ),
             ])
             
+            # Кнопка "История платежей"
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text="💳 История платежей",
+                    callback_data=f"admin_payment_history:{user.telegram_id}",
+                ),
+            ])
+            
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=keyboard_buttons + [
                     [InlineKeyboardButton(
@@ -512,6 +520,12 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
                 InlineKeyboardButton(
                     text="🗑️ Убрать достижение",
                     callback_data=f"admin_revoke_badge:{user.telegram_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="💳 История платежей",
+                        callback_data=f"admin_payment_history:{user.telegram_id}",
                     ),
                 ],
                 [ban_unban_btn],
@@ -1721,6 +1735,106 @@ async def process_lifetime_subscriptions_list(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка при редактировании сообщения: {e}")
         await callback.message.answer(message_text, reply_markup=keyboard, parse_mode="HTML")
+    
+    await callback.answer()
+
+
+@users_router.callback_query(F.data.startswith("admin_payment_history:"))
+async def process_payment_history(callback: CallbackQuery):
+    """Показывает историю платежей пользователя"""
+    async with AsyncSessionLocal() as session:
+        admin_user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not admin_user or not is_admin(admin_user):
+            await callback.answer("❌ Доступ запрещён", show_alert=True)
+            return
+        
+        try:
+            telegram_id = int(callback.data.split(":")[1])
+            
+            # Получаем пользователя
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            # Получаем историю платежей
+            result = await session.execute(
+                select(PaymentLog)
+                .where(PaymentLog.user_id == user.id)
+                .order_by(PaymentLog.created_at.desc())
+                .limit(20)  # Последние 20 платежей
+            )
+            payments = result.scalars().all()
+            
+            if not payments:
+                text = f"💳 <b>История платежей</b>\n\n"
+                text += f"👤 Пользователь: @{user.username or 'без username'}\n"
+                text += f"🆔 Telegram ID: {user.telegram_id}\n\n"
+                text += "📭 <i>Платежей пока нет</i>"
+            else:
+                text = f"💳 <b>История платежей ({len(payments)})</b>\n\n"
+                text += f"👤 Пользователь: @{user.username or 'без username'}\n"
+                text += f"🆔 Telegram ID: {user.telegram_id}\n"
+                text += f"{'─' * 30}\n\n"
+                
+                for i, payment in enumerate(payments, 1):
+                    # Статус
+                    status_emoji = {
+                        'success': '✅',
+                        'succeeded': '✅',
+                        'pending': '⏳',
+                        'failed': '❌'
+                    }.get(payment.status, '❓')
+                    
+                    # Способ оплаты
+                    method_emoji = {
+                        'yookassa': '💳',
+                        'prodamus': '💳',
+                        'manual': '👤'
+                    }.get(payment.payment_method, '💰')
+                    
+                    text += f"<b>{i}. Платёж #{payment.id}</b>\n"
+                    text += f"   {status_emoji} Статус: {payment.status}\n"
+                    text += f"   {method_emoji} Способ: {payment.payment_method or 'не указан'}\n"
+                    text += f"   💰 Сумма: {payment.amount}₽\n"
+                    
+                    # Проверяем есть ли скидка (если сумма меньше полной)
+                    from utils.constants import SUBSCRIPTION_PRICE
+                    if payment.amount < SUBSCRIPTION_PRICE:
+                        discount = SUBSCRIPTION_PRICE - payment.amount
+                        discount_percent = int((discount / SUBSCRIPTION_PRICE) * 100)
+                        text += f"   🎁 Скидка: {discount}₽ ({discount_percent}%)\n"
+                    else:
+                        text += f"   💯 Полная оплата\n"
+                    
+                    text += f"   📅 Дата: {payment.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+                    
+                    # TODO: Добавить последние 4 цифры карты когда будет сохраняться в БД
+                    # if payment.card_last4:
+                    #     text += f"   💳 Карта: •• {payment.card_last4}\n"
+                    
+                    text += "\n"
+                
+                # Ограничение длины сообщения
+                if len(text) > 3900:
+                    text = text[:3900] + "\n\n<i>... показаны последние платежи</i>"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="« Назад к пользователю",
+                    callback_data=f"admin_user_info:{telegram_id}"
+                )]
+            ])
+            
+            try:
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Ошибка при редактировании сообщения: {e}")
+                await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке истории платежей: {e}", exc_info=True)
+            await callback.answer("❌ Ошибка при загрузке истории платежей", show_alert=True)
     
     await callback.answer()
 

@@ -181,20 +181,22 @@ async def apply_benefit_from_callback(
     user_id = user.id  # Сохраняем ID заранее для логирования
     try:
         # КРИТИЧНО: Блокируем строку пользователя для предотвращения дублирования
-        lock_query = select(User).where(User.id == user.id).with_for_update()
+        lock_query = select(User).where(User.id == user_id).with_for_update()
         result = await db.execute(lock_query)
         locked_user = result.scalar_one()
+        # ИСПРАВЛЕНО: сохраняем locked_user_id для защиты от greenlet
+        locked_user_id = locked_user.id
         
         # Проверяем идемпотентность: не применялся ли уже бонус для этого уровня
         benefit_check_query = select(LoyaltyEvent.id).where(
-            LoyaltyEvent.user_id == locked_user.id,
+            LoyaltyEvent.user_id == locked_user_id,
             LoyaltyEvent.kind == 'benefit_chosen',
             LoyaltyEvent.level == level
         )
         benefit_check_result = await db.execute(benefit_check_query)
         
         if benefit_check_result.scalar_one_or_none():
-            logger.warning(f"⚠️ Бонус для уровня {level} уже применён для user_id={locked_user.id}")
+            logger.warning(f"⚠️ Бонус для уровня {level} уже применён для user_id={locked_user_id}")
             return False
         
         # Применяем бонус (внутри apply_benefit уже есть проверка на активную подписку)
@@ -207,10 +209,10 @@ async def apply_benefit_from_callback(
             # Коммитим все изменения атомарно
             await db.commit()
             
-            logger.info(f"✅ Бонус {code} успешно применён для user_id={locked_user.id}")
+            logger.info(f"✅ Бонус {code} успешно применён для user_id={locked_user_id}")
             return True
         else:
-            logger.error(f"❌ Не удалось применить бонус {code} для user_id={locked_user.id}")
+            logger.error(f"❌ Не удалось применить бонус {code} для user_id={locked_user_id}")
             await db.rollback()
             return False
             

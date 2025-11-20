@@ -2368,59 +2368,62 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
         Список типов выданных badges
     """
     granted_badges = []
-    user_id = user.id  # Сохраняем ID заранее для логирования
+    # ИСПРАВЛЕНО: сохраняем все атрибуты в начале для защиты от greenlet
+    user_id = user.id
+    is_first_payment_done = user.is_first_payment_done
+    birthday_gift_year = user.birthday_gift_year
     
     try:
         # 1. Badge "Первая оплата"
-        if user.is_first_payment_done and not await has_user_badge(db, user.id, 'first_payment'):
-            badge = await grant_user_badge(db, user.id, 'first_payment')
+        if is_first_payment_done and not await has_user_badge(db, user_id, 'first_payment'):
+            badge = await grant_user_badge(db, user_id, 'first_payment')
             if badge:
                 granted_badges.append('first_payment')
         
         # 2. Badge "Пригласил 1 друга" и "Пригласил 5 друзей"
         # Подсчитываем количество рефералов пользователя
         from database.models import User
-        referrals_query = select(func.count(User.id)).where(User.referrer_id == user.id)
+        referrals_query = select(func.count(User.id)).where(User.referrer_id == user_id)
         result = await db.execute(referrals_query)
         total_referrals = result.scalar() or 0
         
         if total_referrals >= 1:
-            if not await has_user_badge(db, user.id, 'referral_1'):
-                badge = await grant_user_badge(db, user.id, 'referral_1')
+            if not await has_user_badge(db, user_id, 'referral_1'):
+                badge = await grant_user_badge(db, user_id, 'referral_1')
                 if badge:
                     granted_badges.append('referral_1')
         
         # 3. Badge "Пригласил 5 друзей"
         if total_referrals >= 5:
-            if not await has_user_badge(db, user.id, 'referral_5'):
-                badge = await grant_user_badge(db, user.id, 'referral_5')
+            if not await has_user_badge(db, user_id, 'referral_5'):
+                badge = await grant_user_badge(db, user_id, 'referral_5')
                 if badge:
                     granted_badges.append('referral_5')
         
         # 4. Badge "Пригласила 10 друзей"
         if total_referrals >= 10:
-            if not await has_user_badge(db, user.id, 'referral_10'):
-                badge = await grant_user_badge(db, user.id, 'referral_10')
+            if not await has_user_badge(db, user_id, 'referral_10'):
+                badge = await grant_user_badge(db, user_id, 'referral_10')
                 if badge:
                     granted_badges.append('referral_10')
         
         # 5. Badge "Месяц в клубе" (30 дней стажа)
         from loyalty.levels import calc_tenure_days
         tenure_days = await calc_tenure_days(db, user)
-        if tenure_days >= 30 and not await has_user_badge(db, user.id, 'month_in_club'):
-            badge = await grant_user_badge(db, user.id, 'month_in_club')
+        if tenure_days >= 30 and not await has_user_badge(db, user_id, 'month_in_club'):
+            badge = await grant_user_badge(db, user_id, 'month_in_club')
             if badge:
                 granted_badges.append('month_in_club')
         
         # 6. Badge "Полгода в клубе" (180 дней стажа)
-        if tenure_days >= 180 and not await has_user_badge(db, user.id, 'half_year_in_club'):
-            badge = await grant_user_badge(db, user.id, 'half_year_in_club')
+        if tenure_days >= 180 and not await has_user_badge(db, user_id, 'half_year_in_club'):
+            badge = await grant_user_badge(db, user_id, 'half_year_in_club')
             if badge:
                 granted_badges.append('half_year_in_club')
         
         # 7. Badge "Год в клубе" (365 дней стажа)
-        if tenure_days >= 365 and not await has_user_badge(db, user.id, 'year_in_club'):
-            badge = await grant_user_badge(db, user.id, 'year_in_club')
+        if tenure_days >= 365 and not await has_user_badge(db, user_id, 'year_in_club'):
+            badge = await grant_user_badge(db, user_id, 'year_in_club')
             if badge:
                 granted_badges.append('year_in_club')
         
@@ -2428,7 +2431,7 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
         from database.models import PaymentLog
         payments_query = select(func.count(PaymentLog.id)).where(
             and_(
-                PaymentLog.user_id == user.id,
+                PaymentLog.user_id == user_id,
                 PaymentLog.status == 'success',
                 PaymentLog.is_confirmed == True
             )
@@ -2436,14 +2439,14 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
         payments_result = await db.execute(payments_query)
         total_payments = payments_result.scalar() or 0
         
-        if total_payments >= 5 and not await has_user_badge(db, user.id, 'loyal_customer'):
-            badge = await grant_user_badge(db, user.id, 'loyal_customer')
+        if total_payments >= 5 and not await has_user_badge(db, user_id, 'loyal_customer'):
+            badge = await grant_user_badge(db, user_id, 'loyal_customer')
             if badge:
                 granted_badges.append('loyal_customer')
         
         # 9. Badge "Платиновый клиент" (10+ успешных платежей)
-        if total_payments >= 10 and not await has_user_badge(db, user.id, 'platinum_customer'):
-            badge = await grant_user_badge(db, user.id, 'platinum_customer')
+        if total_payments >= 10 and not await has_user_badge(db, user_id, 'platinum_customer'):
+            badge = await grant_user_badge(db, user_id, 'platinum_customer')
             if badge:
                 granted_badges.append('platinum_customer')
         
@@ -2451,14 +2454,14 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
         # Считаем по успешным платежам, так как при продлении через extend_subscription
         # новая запись подписки не создается, а обновляется существующая
         # Используем уже подсчитанный total_payments из проверки выше
-        if total_payments >= 3 and not await has_user_badge(db, user.id, 'active_member'):
-            badge = await grant_user_badge(db, user.id, 'active_member')
+        if total_payments >= 3 and not await has_user_badge(db, user_id, 'active_member'):
+            badge = await grant_user_badge(db, user_id, 'active_member')
             if badge:
                 granted_badges.append('active_member')
         
         # 11. Badge "День рождения" (получен подарок на ДР)
-        if user.birthday_gift_year and not await has_user_badge(db, user.id, 'birthday_gift'):
-            badge = await grant_user_badge(db, user.id, 'birthday_gift')
+        if birthday_gift_year and not await has_user_badge(db, user_id, 'birthday_gift'):
+            badge = await grant_user_badge(db, user_id, 'birthday_gift')
             if badge:
                 granted_badges.append('birthday_gift')
     

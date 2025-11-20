@@ -314,7 +314,7 @@ async def loyalty_nightly_job():
                 for user in users:
                     user_id = user.id
                     try:
-                        await session.refresh(user)
+                        # ИСПРАВЛЕНО: убран refresh - он вызывает greenlet ошибки
                         granted_badges = await check_and_grant_badges(session, user)
                         if granted_badges:
                             badges_granted_count += len(granted_badges)
@@ -344,12 +344,16 @@ async def loyalty_nightly_job():
                 pending_notified_count = 0
                 
                 for idx, user in enumerate(users, 1):
+                    # ИСПРАВЛЕНО: сохраняем все атрибуты в начале для защиты от greenlet
                     user_id = user.id
                     user_telegram_id = user.telegram_id
+                    current_loyalty_level = user.current_loyalty_level
+                    pending_loyalty_reward = user.pending_loyalty_reward
+                    
                     try:
                         # Получаем стаж и текущий уровень для логирования
                         tenure_days = await calc_tenure_days(session, user)
-                        current_level = user.current_loyalty_level or 'none'
+                        current_level = current_loyalty_level or 'none'
                         
                         # Проверяем активную подписку
                         active_sub = await get_active_subscription(session, user_id)
@@ -388,7 +392,7 @@ async def loyalty_nightly_job():
                             
                             if active_sub:
                                 # Отправляем сообщение с выбором бонуса только если есть активная подписка
-                                await session.refresh(user)  # Обновляем объект пользователя
+                                # ИСПРАВЛЕНО: убран refresh перед отправкой push
                                 
                                 loyalty_logger.info(
                                     f"📤 Отправка push для нового уровня: user_id={user_id}, level={new_level}"
@@ -417,10 +421,10 @@ async def loyalty_nightly_job():
                         
                         # Также проверяем пользователей с pending_loyalty_reward = True
                         # (например, после миграции) - только для АКТУАЛЬНОГО уровня
-                        await session.refresh(user)
-                        if (user.pending_loyalty_reward and 
-                            user.current_loyalty_level and 
-                            user.current_loyalty_level != 'none'):
+                        # ИСПРАВЛЕНО: используем сохраненные переменные вместо refresh
+                        if (pending_loyalty_reward and 
+                            current_loyalty_level and 
+                            current_loyalty_level != 'none'):
                             
                             # Проверяем, не выбирал ли уже пользователь бонус для ТЕКУЩЕГО уровня
                             from database.models import LoyaltyEvent
@@ -428,7 +432,7 @@ async def loyalty_nightly_job():
                             benefit_check_query = select(LoyaltyEvent.id).where(
                                 LoyaltyEvent.user_id == user_id,
                                 LoyaltyEvent.kind == 'benefit_chosen',
-                                LoyaltyEvent.level == user.current_loyalty_level
+                                LoyaltyEvent.level == current_loyalty_level
                             )
                             benefit_check_result = await session.execute(benefit_check_query)
                             
@@ -440,7 +444,7 @@ async def loyalty_nightly_job():
                                 if active_sub:
                                     loyalty_logger.info(
                                         f"📤 Отправка push для pending reward: user_id={user_id}, "
-                                        f"уровень={user.current_loyalty_level}"
+                                        f"уровень={current_loyalty_level}"
                                     )
                                     
                                     # P2.3: Оборачиваем отправку push в try/except для обработки ошибок
@@ -450,7 +454,7 @@ async def loyalty_nightly_job():
                                             bot,
                                             session,
                                             user,
-                                            user.current_loyalty_level
+                                            current_loyalty_level
                                         )
                                         
                                         if success:
@@ -458,7 +462,7 @@ async def loyalty_nightly_job():
                                             stats['pending_notified'] += 1
                                             loyalty_logger.info(
                                                 f"✅ Push отправлен (pending reward): user_id={user_id}, "
-                                                f"уровень={user.current_loyalty_level}"
+                                                f"уровень={current_loyalty_level}"
                                             )
                                             # НЕ сбрасываем pending_loyalty_reward здесь - он сбросится только после выбора бонуса пользователем
                                         else:
@@ -475,11 +479,11 @@ async def loyalty_nightly_job():
                                     stats['pending_skipped_no_sub'] += 1
                                     loyalty_logger.info(
                                         f"⏭️  Пропуск push (pending reward, нет активной подписки): "
-                                        f"user_id={user_id}, уровень={user.current_loyalty_level}"
+                                        f"user_id={user_id}, уровень={current_loyalty_level}"
                                     )
                             else:
                                 loyalty_logger.debug(
-                                    f"ℹ️  Бонус уже выбран для уровня {user.current_loyalty_level}: user_id={user_id}"
+                                    f"ℹ️  Бонус уже выбран для уровня {current_loyalty_level}: user_id={user_id}"
                                 )
                         
                         # Коммитим изменения по одному пользователю для уменьшения блокировок

@@ -38,16 +38,19 @@ async def apply_benefit(
     Returns:
         True если успешно, False в противном случае
     """
+    # ИСПРАВЛЕНО: сохраняем user_id в начале для защиты от greenlet
+    user_id = user.id
+    
     try:
-        logger.info(f"Применение бонуса {code} для user_id={user.id}, level={level}")
+        logger.info(f"Применение бонуса {code} для user_id={user_id}, level={level}")
         
         payload_data = {"benefit": code, "level": level}
         
         if code == 'days_7':
             # Добавляем 7 дней доступа
-            active_sub = await get_active_subscription(db, user.id)
+            active_sub = await get_active_subscription(db, user_id)
             if active_sub:
-                success = await extend_subscription_days(db, user.id, 7, reason="loyalty_bonus_silver")
+                success = await extend_subscription_days(db, user_id, 7, reason="loyalty_bonus_silver")
             else:
                 success = await apply_benefit_for_inactive_user(db, user, 7)
             if success:
@@ -55,9 +58,9 @@ async def apply_benefit(
                 
         elif code == 'days_14':
             # Добавляем 14 дней доступа
-            active_sub = await get_active_subscription(db, user.id)
+            active_sub = await get_active_subscription(db, user_id)
             if active_sub:
-                success = await extend_subscription_days(db, user.id, 14, reason="loyalty_bonus_gold")
+                success = await extend_subscription_days(db, user_id, 14, reason="loyalty_bonus_gold")
             else:
                 success = await apply_benefit_for_inactive_user(db, user, 14)
             if success:
@@ -65,9 +68,9 @@ async def apply_benefit(
                 
         elif code == 'days_30_gift':
             # Добавляем 30 дней доступа и устанавливаем флаг gift_due
-            active_sub = await get_active_subscription(db, user.id)
+            active_sub = await get_active_subscription(db, user_id)
             if active_sub:
-                success = await extend_subscription_days(db, user.id, 30, reason="loyalty_bonus_platinum")
+                success = await extend_subscription_days(db, user_id, 30, reason="loyalty_bonus_platinum")
             else:
                 success = await apply_benefit_for_inactive_user(db, user, 30)
             if success:
@@ -75,7 +78,7 @@ async def apply_benefit(
                 # Устанавливаем флаг gift_due
                 await db.execute(
                     update(User)
-                    .where(User.id == user.id)
+                    .where(User.id == user_id)
                     .values(gift_due=True)
                 )
                 await db.commit()
@@ -84,7 +87,7 @@ async def apply_benefit(
             # Устанавливаем постоянную скидку 5%
             await db.execute(
                 update(User)
-                .where(User.id == user.id)
+                .where(User.id == user_id)
                 .values(lifetime_discount_percent=5)
             )
             await db.commit()
@@ -96,7 +99,7 @@ async def apply_benefit(
             # Устанавливаем постоянную скидку 10%
             await db.execute(
                 update(User)
-                .where(User.id == user.id)
+                .where(User.id == user_id)
                 .values(lifetime_discount_percent=10)
             )
             await db.commit()
@@ -108,7 +111,7 @@ async def apply_benefit(
             # Устанавливаем пожизненную скидку 15%
             await db.execute(
                 update(User)
-                .where(User.id == user.id)
+                .where(User.id == user_id)
                 .values(lifetime_discount_percent=15)
             )
             await db.commit()
@@ -123,7 +126,7 @@ async def apply_benefit(
         if success:
             # Записываем событие выбора бонуса
             event = LoyaltyEvent(
-                user_id=user.id,
+                user_id=user_id,
                 kind='benefit_chosen',
                 level=level,
                 payload=json.dumps(payload_data, ensure_ascii=False)
@@ -131,14 +134,14 @@ async def apply_benefit(
             db.add(event)
             await db.commit()
             
-            logger.info(f"✅ Бонус {code} успешно применён для user_id={user.id}")
+            logger.info(f"✅ Бонус {code} успешно применён для user_id={user_id}")
             return True
         else:
-            logger.error(f"❌ Не удалось применить бонус {code} для user_id={user.id}")
+            logger.error(f"❌ Не удалось применить бонус {code} для user_id={user_id}")
             return False
             
     except Exception as e:
-        logger.error(f"❌ Ошибка при применении бонуса {code} для user_id={user.id}: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при применении бонуса {code} для user_id={user_id}: {e}", exc_info=True)
         await db.rollback()
         return False
 

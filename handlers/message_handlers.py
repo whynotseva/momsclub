@@ -38,17 +38,30 @@ message_logger = logging.getLogger("messages")
 message_router = Router()
 
 
-# ОТКЛЮЧЕНО: Обработчик сообщений из группы
-# Бот больше не контролирует общение в группе - участницы могут свободно общаться
-# без вмешательства бота и спам-сообщений о лимитах
+# Обработчик сообщений из группы - только для учёта активности
+# Бот НЕ контролирует общение - участницы могут свободно общаться
+# Бот молча обновляет счётчик активности в БД (без сообщений)
 
-# @message_router.message(F.chat.id == CLUB_GROUP_ID)
-# async def handle_group_message(message: types.Message):
-#     """
-#     Обработчик сообщений из группы для отслеживания активности пользователей
-#     ОТКЛЮЧЕН по просьбе заказчика - бот не должен влезать в общение
-#     """
-#     pass
+@message_router.message(F.chat.id == CLUB_GROUP_ID)
+async def handle_group_message(message: types.Message):
+    """
+    Обработчик сообщений из группы для отслеживания активности пользователей.
+    Молча обновляет активность без вмешательства в общение.
+    """
+    try:
+        # Пропускаем сообщения от ботов
+        if message.from_user.is_bot:
+            return
+        
+        # Обновляем активность пользователя в БД
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, message.from_user.id)
+            if user:
+                await update_group_activity(session, user.id)
+                await session.commit()
+                logger.debug(f"Обновлена активность пользователя {user.id} в группе")
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении активности в группе: {e}", exc_info=True)
 
 
 # Состояния для FSM (конечного автомата)

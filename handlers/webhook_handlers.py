@@ -603,9 +603,14 @@ async def _process_webhook(request: Request):
         
         # ИСПРАВЛЕНО HIGH-001: Требуем только криптографическую HMAC подпись
         # X-Idempotence-Key - это НЕ подпись, это просто ID запроса
-        # ЮКасса отправляет подпись в заголовке X-Content-Signature (не X-Content-HMAC-SHA256!)
+        # ЮКасса отправляет подпись в заголовке 'signature' (через nginx проксируется без X-Content префикса)
         # Источник: https://yookassa.ru/developers/using-api/webhooks#signature
-        signature_header = request.headers.get("X-Content-Signature") or request.headers.get("X-Content-HMAC-SHA256")
+        signature_header = (
+            request.headers.get("signature") or 
+            request.headers.get("Signature") or
+            request.headers.get("X-Content-Signature") or 
+            request.headers.get("X-Content-HMAC-SHA256")
+        )
         
         # Валидация подписи вебхука
         if not verify_yookassa_signature(body_str, signature_header=signature_header, client_ip=client_ip):
@@ -710,16 +715,16 @@ async def handle_payment_succeeded(payment):
             if not payment_log:
                 webhook_logger.warning(f"Платеж {payment_id} не найден в БД, создаем новую запись")
                 
-                # Извлекаем user_id из метаданных
-                user_id_from_meta = metadata.get("user_id")
-                if not user_id_from_meta:
-                    webhook_logger.error("Нет user_id в metadata!")
+                # Извлекаем telegram_id из метаданных (не user_id!)
+                telegram_id_from_meta = metadata.get("telegram_id")
+                if not telegram_id_from_meta:
+                    webhook_logger.error("Нет telegram_id в metadata!")
                     return
                 
-                # Находим пользователя
-                user = await get_user_by_telegram_id(session, int(user_id_from_meta))
+                # Находим пользователя по telegram_id
+                user = await get_user_by_telegram_id(session, int(telegram_id_from_meta))
                 if not user:
-                    webhook_logger.error(f"Пользователь telegram_id={user_id_from_meta} не найден!")
+                    webhook_logger.error(f"Пользователь telegram_id={telegram_id_from_meta} не найден!")
                     return
                 
                 # Получаем количество дней

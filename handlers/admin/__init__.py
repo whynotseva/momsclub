@@ -6,6 +6,7 @@ from .cancellations import register_admin_cancellations_handlers
 from .users import register_admin_users_handlers
 from .user_finance import register_finance_handlers
 from .user_activity import register_activity_handlers
+from .user_prediction import register_prediction_handlers
 from .core import register_admin_core_handlers
 from .birthdays import register_admin_birthdays_handlers
 from .admins import register_admin_admins_handlers

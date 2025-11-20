@@ -20,6 +20,7 @@ from handlers.admin import (
     register_admin_users_handlers,
     register_finance_handlers,
     register_activity_handlers,
+    register_prediction_handlers,
     register_admin_core_handlers,
     register_admin_birthdays_handlers,
     register_admin_admins_handlers,
@@ -1540,6 +1541,8 @@ async def main():
     register_finance_handlers(dp)
     # Модуль расширенной активности пользователя в группе
     register_activity_handlers(dp)
+    # Модуль прогнозирования поведения пользователя
+    register_prediction_handlers(dp)
     # Модуль системы лояльности
     register_admin_loyalty_handlers(dp)
     # Модуль заявок на отмену автопродления

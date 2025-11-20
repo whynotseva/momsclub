@@ -375,6 +375,14 @@ async def process_user_id(message: types.Message, state: FSMContext):
                 ),
             ])
             
+            # Кнопка "Прогноз"
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text="🔮 Прогноз поведения",
+                    callback_data=f"admin_user_prediction:{user.telegram_id}",
+                ),
+            ])
+            
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=keyboard_buttons + [
                     [InlineKeyboardButton(
@@ -604,6 +612,12 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
                     InlineKeyboardButton(
                         text="📊 Активность в группе",
                         callback_data=f"admin_user_activity:{user.telegram_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔮 Прогноз поведения",
+                        callback_data=f"admin_user_prediction:{user.telegram_id}",
                     ),
                 ],
                 [ban_unban_btn],

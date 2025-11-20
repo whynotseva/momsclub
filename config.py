@@ -12,12 +12,19 @@ if not BOT_TOKEN:
     raise ValueError("Не задан токен бота. Укажите BOT_TOKEN в .env файле")
 
 # Конфигурация платежной системы ЮКасса
-YOOKASSA_CONFIG = {
-    "shop_id": os.getenv("YOOKASSA_SHOP_ID", "1081645"),
-    "secret_key": os.getenv("YOOKASSA_SECRET_KEY", "live_QVOOyvhM_1UYh2svWeqfccXKD742b8P227YkwI_WW6I"),
-    "webhook_url": os.getenv("YOOKASSA_WEBHOOK_URL", "https://momsclubwebhook.ru/webhook")
-}
+# КРИТИЧНО: Не используем значения по умолчанию для безопасности
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
+YOOKASSA_WEBHOOK_URL = os.getenv("YOOKASSA_WEBHOOK_URL", "https://momsclubwebhook.ru/webhook")
 
 # Проверка наличия обязательных параметров ЮКассы
-if not YOOKASSA_CONFIG["shop_id"] or not YOOKASSA_CONFIG["secret_key"]:
-    raise ValueError("Не заданы параметры ЮКассы. Укажите YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY в .env файле")
+if not YOOKASSA_SHOP_ID:
+    raise ValueError("КРИТИЧНО: Не задан YOOKASSA_SHOP_ID. Укажите в .env файле")
+if not YOOKASSA_SECRET_KEY:
+    raise ValueError("КРИТИЧНО: Не задан YOOKASSA_SECRET_KEY. Укажите в .env файле")
+
+YOOKASSA_CONFIG = {
+    "shop_id": YOOKASSA_SHOP_ID,
+    "secret_key": YOOKASSA_SECRET_KEY,
+    "webhook_url": YOOKASSA_WEBHOOK_URL
+}

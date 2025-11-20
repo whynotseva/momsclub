@@ -14,6 +14,7 @@ from database.crud import (
     get_user_by_id,
     get_active_subscription,
     mark_cancellation_request_contacted,
+    get_user_by_telegram_id,
 )
 
 
@@ -185,19 +186,48 @@ async def approve_cancel_renewal(callback: CallbackQuery):
             return
 
     request_id = int(callback.data.split("_")[-1])
+    
+    # Получаем данные в первой сессии
     async with AsyncSessionLocal() as session:
         request = await get_cancellation_request_by_id(session, request_id)
         if not request:
             await callback.answer("Заявка не найдена", show_alert=True)
             return
 
+        # Сохраняем данные ДО закрытия сессии
+        user_id = request.user_id
+        
+        # Получаем user отдельно чтобы избежать lazy loading
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+        user_telegram_id = user.telegram_id
+
+    # Выполняем операции во второй сессии
+    async with AsyncSessionLocal() as session:
         try:
-            await disable_user_auto_renewal(session, request.user_id)
+            await disable_user_auto_renewal(session, user_id)
             await update_cancellation_request_status(session, request_id, "approved")
         except Exception as e:
             logger.error(f"Ошибка одобрения заявки: {e}")
             await callback.answer("Ошибка при одобрении", show_alert=True)
             return
+
+    # Отправляем уведомление пользователю
+    try:
+        from bot import bot
+        await bot.send_message(
+            user_telegram_id,
+            "✅ <b>Ваша заявка на отмену автопродления одобрена!</b>\n\n"
+            "🚫 Автопродление отключено.\n\n"
+            "📌 Ваша подписка будет действовать до окончания текущего периода.\n"
+            "После этого автоматическое списание производиться не будет.\n\n"
+            "🤎 Спасибо, что были с нами!",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления пользователю: {e}")
 
     await callback.answer(success("Заявка одобрена, автопродление отключено"), show_alert=True)
     await view_cancellation_request_detail(callback)
@@ -212,12 +242,26 @@ async def reject_cancel_renewal(callback: CallbackQuery):
             return
 
     request_id = int(callback.data.split("_")[-1])
+    
+    # Получаем данные в первой сессии
     async with AsyncSessionLocal() as session:
         request = await get_cancellation_request_by_id(session, request_id)
         if not request:
             await callback.answer("Заявка не найдена", show_alert=True)
             return
 
+        # Сохраняем данные ДО закрытия сессии
+        user_id = request.user_id
+        
+        # Получаем user отдельно чтобы избежать lazy loading
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+        user_telegram_id = user.telegram_id
+
+    # Выполняем операции во второй сессии
+    async with AsyncSessionLocal() as session:
         try:
             await update_cancellation_request_status(session, request_id, "rejected")
         except Exception as e:
@@ -225,13 +269,18 @@ async def reject_cancel_renewal(callback: CallbackQuery):
             await callback.answer(error("Ошибка при отклонении"), show_alert=True)
             return
 
+    # Отправляем уведомление пользователю
     try:
-        await callback.message.answer(
-            "❌ Заявка отклонена. Пользователь сохранит текущее состояние подписки.\n"
-            "Если у вас есть вопросы, обратитесь в службу заботы."
+        from bot import bot
+        await bot.send_message(
+            user_telegram_id,
+            "❌ <b>Ваша заявка на отмену автопродления отклонена</b>\n\n"
+            "🔄 Автопродление остается активным.\n\n"
+            "💬 Если у вас есть вопросы, обратитесь в службу поддержки.",
+            parse_mode="HTML"
         )
     except Exception as e:
-        logger.error(f"Ошибка уведомления пользователя: {e}")
+        logger.error(f"Ошибка отправки уведомления пользователю: {e}")
 
     await callback.answer(error("Заявка отклонена"), show_alert=True)
     await view_cancellation_request_detail(callback)

@@ -6,7 +6,30 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from datetime import datetime, timedelta
 import logging
 
-from utils.constants import ADMIN_IDS, CLUB_CHANNEL_URL
+# Импортируем из общих констант и helpers
+from utils.constants import LIFETIME_THRESHOLD, LIFETIME_SUBSCRIPTION_GROUP
+from utils.helpers import is_lifetime_subscription
+
+def format_subscription_status(subscription) -> str:
+    """Форматирует статус подписки для отображения в админке"""
+    if not subscription:
+        return "❌ Отсутствует или истекла"
+    
+    if is_lifetime_subscription(subscription):
+        return "∞ Пожизненная подписка"
+    
+    days_left = (subscription.end_date - datetime.now()).days
+    return f"✅ Активна до {subscription.end_date.strftime('%d.%m.%Y')} (осталось дней: {days_left})"
+
+from utils.constants import (
+    ADMIN_IDS, 
+    CLUB_CHANNEL_URL,
+    BADGE_NAMES,
+    BADGE_NAMES_AND_DESCRIPTIONS,
+    AUTOMATIC_BADGES,
+    SPECIAL_BADGES,
+    VALID_BADGE_TYPES,
+)
 from utils.admin_permissions import is_admin, can_manage_admins
 from utils.group_manager import GroupManager
 from utils.helpers import fmt_date, html_kv, admin_nav_back
@@ -15,6 +38,9 @@ from database.crud import (
     get_user_by_telegram_id,
     get_user_by_username,
     get_active_subscription,
+    get_group_activity,
+    get_top_active_users,
+    get_inactive_users,
     extend_subscription,
     has_active_subscription,
     deactivate_subscription,
@@ -29,17 +55,56 @@ from database.crud import (
 from database.models import User, Subscription
 from loyalty.levels import calc_tenure_days, level_for_days
 from loyalty.service import effective_discount
-from sqlalchemy import update
+from sqlalchemy import update, select, and_, func
 
 logger = logging.getLogger(__name__)
 
 users_router = Router(name="admin_users")
 
+# Константа для размера страницы списка пожизненных подписок
+LIFETIME_SUBSCRIPTIONS_PAGE_SIZE = 10
 
 class AdminStates(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_days = State()
     waiting_for_end_date = State()
+
+
+@users_router.callback_query(F.data == "admin_users_menu")
+async def process_users_menu(callback: CallbackQuery):
+    """Показывает подменю 'Пользователи' с двумя опциями"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Поиск пользователя", callback_data="admin_find_user")],
+            [InlineKeyboardButton(text="∞ Пожизненные подписки", callback_data="admin_lifetime_subscriptions:0")],
+            [InlineKeyboardButton(text="🔥 Топ активных в группе", callback_data="admin_top_active_users:0")],
+            [InlineKeyboardButton(text="🔍 Фильтр по активности", callback_data="admin_filter_activity")],
+            [InlineKeyboardButton(text="« Назад", callback_data="admin_back")],
+        ]
+    )
+
+    try:
+        await callback.message.edit_text(
+            "<b>👤 Пользователи</b>\n\n"
+            "Выберите действие:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании сообщения: {e}")
+        await callback.message.answer(
+            "<b>👤 Пользователи</b>\n\n"
+            "Выберите действие:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    await callback.answer()
 
 
 @users_router.callback_query(F.data == "admin_find_user")
@@ -98,11 +163,7 @@ async def process_user_id(message: types.Message, state: FSMContext):
 
         if user:
             subscription = await get_active_subscription(session, user.id)
-            if subscription:
-                days_left = (subscription.end_date - datetime.now()).days
-                subscription_status = f"✅ Активна до {subscription.end_date.strftime('%d.%m.%Y')} (осталось дней: {days_left})"
-            else:
-                subscription_status = "❌ Отсутствует или истекла"
+            subscription_status = format_subscription_status(subscription)
 
             tenure_days = await calc_tenure_days(session, user)
             level = level_for_days(tenure_days)
@@ -168,38 +229,55 @@ async def process_user_id(message: types.Message, state: FSMContext):
             # Получаем badges пользователя
             user_badges = await get_user_badges(session, user.id)
             if user_badges:
-                badge_names = {
-                    'first_payment': '💳 Первая оплата',
-                    'referral_1': '🤝 Пригласила друга',
-                    'referral_5': '🌟 Пригласила 5 друзей',
-                    'referral_10': '✨ Пригласила 10 друзей',
-                    'month_in_club': '📅 Месяц в клубе',
-                    'half_year_in_club': '💫 Полгода в клубе',
-                    'year_in_club': '🏆 Год в клубе',
-                    'loyal_customer': '💎 Верный клиент',
-                    'platinum_customer': '👑 Платиновый клиент',
-                    'active_member': '🔥 Активный участник',
-                    'birthday_gift': '🎂 День рождения',
-                    # Специальные badges (от админов)
-                    'community_helper': '💝 Помощь сообществу',
-                    'inspiration': '✨ Источник вдохновения',
-                    'early_supporter': '🌱 Первопроходец',
-                    'ambassador': '🌟 Амбассадор клуба',
-                    'special_thanks': '💖 Особая благодарность',
-                    'milestone_celebrator': '🎉 Празднуем вместе',
-                    'supportive_friend': '🤗 Поддерживающая подруга',
-                    'creative_soul': '🎨 Творческая душа',
-                    'motivator': '💪 Мотиватор',
-                    'heart_of_club': '💕 Сердце клуба',
-                    'creator_special': '💋 Моя сучка от создателя Moms Club',
-                }
-                badges_list = [badge_names.get(badge.badge_type, badge.badge_type) for badge in user_badges]
+                badges_list = [BADGE_NAMES.get(badge.badge_type, badge.badge_type) for badge in user_badges]
                 badges_info = f"\n<b>🏆 Достижения ({len(user_badges)}):</b>\n" + "\n".join([f"• {badge}" for badge in badges_list])
                 user_info_lines.append("")
                 user_info_lines.append(badges_info)
             else:
                 user_info_lines.append("")
                 user_info_lines.append("<b>🏆 Достижения:</b> Нет")
+            
+            # Получаем активность в группе
+            group_activity = await get_group_activity(session, user.id)
+            if group_activity:
+                message_count = group_activity.message_count
+                last_activity = group_activity.last_activity
+                
+                # Форматируем дату последней активности
+                if last_activity:
+                    now = datetime.now()
+                    time_diff = now - last_activity
+                    
+                    if time_diff.days == 0:
+                        hours_ago = time_diff.seconds // 3600
+                        if hours_ago == 0:
+                            minutes_ago = time_diff.seconds // 60
+                            if minutes_ago == 0:
+                                activity_text = "только что"
+                            else:
+                                activity_text = f"{minutes_ago} мин. назад"
+                        else:
+                            activity_text = f"{hours_ago} ч. назад"
+                    elif time_diff.days == 1:
+                        activity_text = "вчера"
+                    elif time_diff.days < 7:
+                        activity_text = f"{time_diff.days} дн. назад"
+                    else:
+                        activity_text = last_activity.strftime("%d.%m.%Y")
+                else:
+                    activity_text = "никогда"
+                
+                activity_info = f"\n<b>💬 Активность в группе:</b>\n"
+                activity_info += f"📝 Сообщений: {message_count}\n"
+                activity_info += f"🕐 Последняя активность: {activity_text}\n"
+                user_info_lines.append("")
+                user_info_lines.append(activity_info)
+            else:
+                activity_info = f"\n<b>💬 Активность в группе:</b>\n"
+                activity_info += f"📝 Сообщений: 0\n"
+                activity_info += f"🕐 Последняя активность: никогда\n"
+                user_info_lines.append("")
+                user_info_lines.append(activity_info)
             
             user_info = "\n".join(user_info_lines)
 
@@ -215,25 +293,25 @@ async def process_user_id(message: types.Message, state: FSMContext):
                 can_manage = can_manage_admins(current_admin) if current_admin else False
             
             keyboard_buttons = [
-                [InlineKeyboardButton(text="🎁 Выдать подписку", callback_data=f"admin_grant:{user.telegram_id}")],
-                [
-                    InlineKeyboardButton(text="➕ Добавить 30 дней", callback_data=f"admin_add_days:{user.telegram_id}:30"),
-                    InlineKeyboardButton(text="➖ Убрать 30 дней", callback_data=f"admin_reduce_days:{user.telegram_id}:30"),
-                ],
-                [autorenew_btn],
+                    [InlineKeyboardButton(text="🎁 Выдать подписку", callback_data=f"admin_grant:{user.telegram_id}")],
+                    [
+                        InlineKeyboardButton(text="➕ Добавить 30 дней", callback_data=f"admin_add_days:{user.telegram_id}:30"),
+                        InlineKeyboardButton(text="➖ Убрать 30 дней", callback_data=f"admin_reduce_days:{user.telegram_id}:30"),
+                    ],
+                    [autorenew_btn],
             ]
             
             # Кнопки лояльности - только для создательницы/разработчика
             if can_manage:
                 keyboard_buttons.append([
-                    InlineKeyboardButton(
-                        text="⭐ Изменить уровень",
-                        callback_data=f"admin_loyalty_set_level_from_user:{user.telegram_id}",
-                    ),
-                    InlineKeyboardButton(
-                        text="🎁 Выдать бонус",
-                        callback_data=f"admin_loyalty_grant_from_user:{user.telegram_id}",
-                    ),
+                        InlineKeyboardButton(
+                            text="⭐ Изменить уровень",
+                            callback_data=f"admin_loyalty_set_level_from_user:{user.telegram_id}",
+                        ),
+                        InlineKeyboardButton(
+                            text="🎁 Выдать бонус",
+                            callback_data=f"admin_loyalty_grant_from_user:{user.telegram_id}",
+                        ),
                 ])
             
             keyboard_buttons.append([
@@ -264,8 +342,8 @@ async def process_user_id(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-async def process_update_user_info(callback: CallbackQuery, telegram_id: int):
-    logger.info(f"[admin_users] process_update_user_info начат для telegram_id: {telegram_id}")
+async def process_update_user_info(callback: CallbackQuery, telegram_id: int, return_to_lifetime_page: int = None, return_to_top_page: int = None, return_to_inactive_days: int = None, return_to_inactive_page: int = None):
+    logger.info(f"[admin_users] process_update_user_info начат для telegram_id: {telegram_id}, return_to_lifetime_page: {return_to_lifetime_page}, return_to_top_page: {return_to_top_page}")
     async with AsyncSessionLocal() as session:
         user = await get_user_by_telegram_id(session, telegram_id)
         if not user:
@@ -273,80 +351,120 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int):
             return
 
         subscription = await get_active_subscription(session, user.id)
-        if subscription:
-            days_left = (subscription.end_date - datetime.now()).days
-            subscription_status = f"✅ Активна до {subscription.end_date.strftime('%d.%m.%Y')} (осталось дней: {days_left})"
-        else:
-            subscription_status = "❌ Отсутствует или истекла"
+        subscription_status = format_subscription_status(subscription)
         autorenewal_status = "Включено" if getattr(user, "is_recurring_active", False) else "Выключено"
         created_at_str = user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else 'Не заполнено'
         updated_at_str = user.updated_at.strftime('%d.%m.%Y %H:%M') if user.updated_at else 'Не заполнено'
 
-        # Лояльность — как в первичном отображении
+        # Лояльность — используем тот же формат, что и в process_user_id
         tenure_days = await calc_tenure_days(session, user)
         level = level_for_days(tenure_days)
         discount = effective_discount(user)
         level_emoji = {"none": "", "silver": "🥈", "gold": "🥇", "platinum": "💎"}
         level_display = f"{level_emoji.get(user.current_loyalty_level or 'none', '')} {user.current_loyalty_level or 'none'}"
-        loyalty_info = (
-            f"<b>Лояльность:</b>\n"
-            f"Дата: {user.first_payment_date.strftime('%d.%m.%Y') if getattr(user, 'first_payment_date', None) else 'N/A'}\n"
-            f"Стаж: {tenure_days} дней\n"
-            f"Уровень: {level_display} (рассчитанный: {level})\n"
-            f"Ожидает бонус: {'Да' if getattr(user, 'pending_loyalty_reward', False) else 'Нет'}\n"
-            f"Постоянная скидка: {getattr(user, 'lifetime_discount_percent', 0) or 0}%\n"
-            f"Подарок: {'Да' if getattr(user, 'gift_due', False) else 'Нет'}\n"
-        )
+        
+        if user.first_payment_date:
+            first_payment = user.first_payment_date.strftime("%d.%m.%Y")
+            discount_lines = []
+            if user.one_time_discount_percent > 0:
+                discount_lines.append(f"💰 Разовая скидка: {user.one_time_discount_percent}%")
+            if user.lifetime_discount_percent > 0:
+                discount_lines.append(
+                    f"💎 Постоянная скидка: {user.lifetime_discount_percent}% ✨ (лояльность)"
+                )
+            elif user.one_time_discount_percent == 0:
+                discount_lines.append(f"💎 Постоянная скидка: {user.lifetime_discount_percent}%")
+            discount_info = "\n".join(discount_lines) if discount_lines else "💎 Постоянная скидка: 0%"
+
+            loyalty_info = (
+                f"\n<b>💎 Лояльность:</b>\n"
+                f"📅 Первая оплата: {first_payment}\n"
+                f"📊 Стаж: {tenure_days} дней\n"
+                f"⭐ Уровень: {level_display} (рассчитанный: {level})\n"
+                f"🎁 Ожидает бонус: {'Да' if user.pending_loyalty_reward else 'Нет'}\n"
+                f"{discount_info}\n"
+                f"🎁 Подарок: {'Да' if user.gift_due else 'Нет'}\n"
+            )
+        else:
+            loyalty_info = "\n<b>💎 Лояльность:</b>\n❌ Первая оплата не зафиксирована\n"
 
         # Получаем badges пользователя
         user_badges = await get_user_badges(session, user.id)
-        badges_info = ""
-        if user_badges:
-            badge_names = {
-                'first_payment': '💳 Первая оплата',
-                'referral_1': '🤝 Пригласила друга',
-                'referral_5': '🌟 Пригласила 5 друзей',
-                'referral_10': '✨ Пригласила 10 друзей',
-                'month_in_club': '📅 Месяц в клубе',
-                'half_year_in_club': '💫 Полгода в клубе',
-                'year_in_club': '🏆 Год в клубе',
-                'loyal_customer': '💎 Верный клиент',
-                'platinum_customer': '👑 Платиновый клиент',
-                'active_member': '🔥 Активный участник',
-                'birthday_gift': '🎂 День рождения',
-                # Специальные badges (от админов)
-                'community_helper': '💝 Помощь сообществу',
-                'inspiration': '✨ Источник вдохновения',
-                'early_supporter': '🌱 Первопроходец',
-                'ambassador': '🌟 Амбассадор клуба',
-                'special_thanks': '💖 Особая благодарность',
-                'milestone_celebrator': '🎉 Празднуем вместе',
-                'supportive_friend': '🤗 Поддерживающая подруга',
-                'creative_soul': '🎨 Творческая душа',
-                'motivator': '💪 Мотиватор',
-                'heart_of_club': '💕 Сердце клуба',
-                'creator_special': '💋 Моя сучка от создателя Moms Club',
-            }
-            badges_list = [badge_names.get(badge.badge_type, badge.badge_type) for badge in user_badges]
-            badges_info = f"\n<b>🏆 Достижения ({len(user_badges)}):</b>\n" + "\n".join([f"• {badge}" for badge in badges_list]) + "\n"
+        
+        # Получаем активность в группе
+        group_activity = await get_group_activity(session, user.id)
+        activity_info = ""
+        if group_activity:
+            message_count = group_activity.message_count
+            last_activity = group_activity.last_activity
+            
+            # Форматируем дату последней активности
+            if last_activity:
+                now = datetime.now()
+                time_diff = now - last_activity
+                
+                if time_diff.days == 0:
+                    hours_ago = time_diff.seconds // 3600
+                    if hours_ago == 0:
+                        minutes_ago = time_diff.seconds // 60
+                        if minutes_ago == 0:
+                            activity_text = "только что"
+                        else:
+                            activity_text = f"{minutes_ago} мин. назад"
+                    else:
+                        activity_text = f"{hours_ago} ч. назад"
+                elif time_diff.days == 1:
+                    activity_text = "вчера"
+                elif time_diff.days < 7:
+                    activity_text = f"{time_diff.days} дн. назад"
+                else:
+                    activity_text = last_activity.strftime("%d.%m.%Y")
+            else:
+                activity_text = "никогда"
+            
+            activity_info = f"\n<b>💬 Активность в группе:</b>\n"
+            activity_info += f"📝 Сообщений: {message_count}\n"
+            activity_info += f"🕐 Последняя активность: {activity_text}\n"
         else:
-            badges_info = "\n<b>🏆 Достижения:</b> Нет\n"
-
-        user_info = (
-            f"<b>👤 Информация о пользователе:</b>\n\n"
-            f"<b>ID в базе:</b> {user.id}\n"
-            f"<b>Telegram ID:</b> {user.telegram_id}\n"
-            f"<b>Username:</b> {user.username or 'Не указан'}\n"
-            f"<b>Имя:</b> {user.first_name or 'Не указано'}\n"
-            f"<b>Фамилия:</b> {user.last_name or 'Не указана'}\n"
-            f"<b>Статус:</b> {'Активен' if user.is_active else 'Неактивен'}\n"
-            f"<b>Создан:</b> {created_at_str}\n"
-            f"<b>Обновлен:</b> {updated_at_str}\n\n"
-            f"<b>🔄 Автопродление:</b> {autorenewal_status}\n\n"
-            f"<b>Подписка:</b> {subscription_status}\n"
-            f"{loyalty_info}"
-            f"{badges_info}"
+            activity_info = f"\n<b>💬 Активность в группе:</b>\n"
+            activity_info += f"📝 Сообщений: 0\n"
+            activity_info += f"🕐 Последняя активность: никогда\n"
+        
+        # Формируем ссылку на username (как в process_user_id)
+        profile_link = (
+            f'<a href="https://t.me/{user.username}">@{user.username}</a>' if user.username else "Не указан"
         )
+        
+        # Используем тот же формат, что и в process_user_id (с html_kv)
+        user_info_lines = [
+            "<b>👤 Информация о пользователе:</b>",
+            "",
+            html_kv("ID в базе", str(user.id)),
+            html_kv("Telegram ID", str(user.telegram_id)),
+            html_kv("Username", profile_link),
+            html_kv("Имя", user.first_name or "Не указано"),
+            html_kv("Фамилия", user.last_name or "Не указана"),
+            html_kv("Статус", "Активен" if user.is_active else "Неактивен"),
+            html_kv("Создан", created_at_str),
+            html_kv("Обновлен", updated_at_str),
+            "",
+            html_kv("🔄 Автопродление", autorenewal_status),
+            "",
+            html_kv("Подписка", subscription_status),
+            loyalty_info,
+            activity_info,
+        ]
+        
+        if user_badges:
+            badges_list = [BADGE_NAMES.get(badge.badge_type, badge.badge_type) for badge in user_badges]
+            badges_info = f"\n<b>🏆 Достижения ({len(user_badges)}):</b>\n" + "\n".join([f"• {badge}" for badge in badges_list])
+            user_info_lines.append("")
+            user_info_lines.append(badges_info)
+        else:
+            user_info_lines.append("")
+            user_info_lines.append("<b>🏆 Достижения:</b> Нет")
+        
+        user_info = "\n".join(user_info_lines)
 
         keyboard_btn = InlineKeyboardButton(text="🎁 Выдать подписку", callback_data=f"admin_grant:{user.telegram_id}")
         ban_unban_btn = InlineKeyboardButton(
@@ -359,30 +477,30 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int):
         can_manage = can_manage_admins(current_admin) if current_admin else False
         
         keyboard_buttons = [
-            [keyboard_btn],
-            [
-                InlineKeyboardButton(text="➕ Добавить 30 дней", callback_data=f"admin_add_days:{user.telegram_id}:30"),
-                InlineKeyboardButton(text="➖ Убрать 30 дней", callback_data=f"admin_reduce_days:{user.telegram_id}:30"),
-            ],
-            [
-                InlineKeyboardButton(
-                    text=("🛑 Выключить автопродление" if getattr(user, "is_recurring_active", False) else "🔄 Включить автопродление"),
-                    callback_data=(f"admin_disable_autorenew:{user.telegram_id}" if getattr(user, "is_recurring_active", False) else f"admin_enable_autorenew:{user.telegram_id}")
-                )
-            ],
+                [keyboard_btn],
+                [
+                    InlineKeyboardButton(text="➕ Добавить 30 дней", callback_data=f"admin_add_days:{user.telegram_id}:30"),
+                    InlineKeyboardButton(text="➖ Убрать 30 дней", callback_data=f"admin_reduce_days:{user.telegram_id}:30"),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=("🛑 Выключить автопродление" if getattr(user, "is_recurring_active", False) else "🔄 Включить автопродление"),
+                        callback_data=(f"admin_disable_autorenew:{user.telegram_id}" if getattr(user, "is_recurring_active", False) else f"admin_enable_autorenew:{user.telegram_id}")
+                    )
+                ],
         ]
         
         # Кнопки лояльности - только для создательницы/разработчика
         if can_manage:
             keyboard_buttons.append([
-                InlineKeyboardButton(
-                    text="⭐ Изменить уровень",
-                    callback_data=f"admin_loyalty_set_level_from_user:{user.telegram_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🎁 Выдать бонус",
-                    callback_data=f"admin_loyalty_grant_from_user:{user.telegram_id}",
-                ),
+                    InlineKeyboardButton(
+                        text="⭐ Изменить уровень",
+                        callback_data=f"admin_loyalty_set_level_from_user:{user.telegram_id}",
+                    ),
+                    InlineKeyboardButton(
+                        text="🎁 Выдать бонус",
+                        callback_data=f"admin_loyalty_grant_from_user:{user.telegram_id}",
+                    ),
             ])
         
         keyboard_buttons.extend([
@@ -394,10 +512,18 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int):
                 InlineKeyboardButton(
                     text="🗑️ Убрать достижение",
                     callback_data=f"admin_revoke_badge:{user.telegram_id}",
-                ),
-            ],
-            [ban_unban_btn],
-            [InlineKeyboardButton(text="« Назад", callback_data="admin_back")],
+                    ),
+                ],
+                [ban_unban_btn],
+            [InlineKeyboardButton(
+                text="« Назад", 
+                callback_data=(
+                    f"admin_lifetime_subscriptions:{return_to_lifetime_page}" if return_to_lifetime_page is not None 
+                    else f"admin_top_active_users:{return_to_top_page}" if return_to_top_page is not None
+                    else f"admin_inactive_users:{return_to_inactive_days}:{return_to_inactive_page}" if return_to_inactive_days is not None
+                    else "admin_back"
+                )
+            )],
         ])
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
@@ -583,6 +709,34 @@ async def process_user_info_from_callback(callback: CallbackQuery):
         logger.info(f"[admin_users] admin_user_info успешно обработан для telegram_id: {telegram_id}")
     except Exception as e:
         logger.error(f"[admin_users] Ошибка в process_update_user_info для telegram_id {telegram_id}: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке информации о пользователе", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_user_info_from_lifetime:"))
+async def process_user_info_from_lifetime_list(callback: CallbackQuery):
+    """Обработчик клика на пользователя из списка пожизненных подписок"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        lifetime_page = int(parts[2]) if len(parts) > 2 else 0
+        logger.info(f"[admin_users] Обработчик admin_user_info_from_lifetime вызван для telegram_id: {telegram_id}, page: {lifetime_page}")
+    except (ValueError, IndexError) as e:
+        logger.error(f"[admin_users] Ошибка при парсинге admin_user_info_from_lifetime: {e}, data: {callback.data}")
+        await callback.answer("Ошибка: неверный формат данных", show_alert=True)
+        return
+
+    try:
+        await process_update_user_info(callback, telegram_id, return_to_lifetime_page=lifetime_page)
+        await callback.answer()
+        logger.info(f"[admin_users] admin_user_info_from_lifetime успешно обработан для telegram_id: {telegram_id}")
+    except Exception as e:
+        logger.error(f"[admin_users] Ошибка в process_update_user_info_from_lifetime для telegram_id {telegram_id}: {e}", exc_info=True)
         await callback.answer("❌ Ошибка при загрузке информации о пользователе", show_alert=True)
 
 
@@ -815,6 +969,12 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
             if not user:
                 await message.answer(f"❌ Пользователь с ID {telegram_id} не найден", reply_markup=keyboard)
                 return False
+            
+            # Сохраняем данные пользователя для использования после commit
+            user_telegram_id = user.telegram_id
+            user_first_name = user.first_name or ""
+            user_last_name = user.last_name or ""
+            user_username = user.username
 
             has_sub = await has_active_subscription(session, user.id)
             if has_sub:
@@ -823,8 +983,10 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                     if active_sub:
                         await deactivate_subscription(session, active_sub.id)
                         new_sub = await create_subscription(session, user.id, end_date, 0, "admin_lifetime")
+                        new_sub_end_date = new_sub.end_date
                     else:
                         new_sub = await create_subscription(session, user.id, end_date, 0, "admin_lifetime")
+                        new_sub_end_date = new_sub.end_date
                 elif end_date:
                     active_sub = await get_active_subscription(session, user.id)
                     if active_sub:
@@ -833,10 +995,13 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                         await session.commit()
                         await session.refresh(active_sub)
                         new_sub = active_sub
+                        new_sub_end_date = new_sub.end_date
                     else:
                         new_sub = await create_subscription(session, user.id, end_date, 0, "admin_date")
+                        new_sub_end_date = new_sub.end_date
                 else:
                     new_sub = await extend_subscription(session, user.id, days, 0, "admin_extend")
+                    new_sub_end_date = new_sub.end_date
 
                 await create_payment_log(
                     session,
@@ -849,9 +1014,9 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                     details=details,
                 )
 
-                days_text = "бессрочно" if is_lifetime else f"до {new_sub.end_date.strftime('%d.%m.%Y')}"
+                days_text = "бессрочно" if is_lifetime else f"до {new_sub_end_date.strftime('%d.%m.%Y')}"
                 await message.answer(
-                    f"✅ Пользователю {user.first_name or ''} {user.last_name or ''} (@{user.username or str(user.telegram_id)}) успешно обновлена подписка!\n\n"
+                    f"✅ Пользователю {user_first_name} {user_last_name} (@{user_username or str(user_telegram_id)}) успешно обновлена подписка!\n\n"
                     f"Подписка активна {days_text}.",
                     reply_markup=keyboard,
                 )
@@ -863,9 +1028,9 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                         "Вы можете перейти в закрытый канал по кнопке ниже:"
                     )
                     user_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔐 Войти в Mom's Club", url=CLUB_CHANNEL_URL)]])
-                    await bot.send_message(user.telegram_id, user_notification, reply_markup=user_keyboard)
+                    await bot.send_message(user_telegram_id, user_notification, reply_markup=user_keyboard)
                 except Exception as e:
-                    logger.error(f"Ошибка уведомления пользователя {user.telegram_id}: {e}")
+                    logger.error(f"Ошибка уведомления пользователя {user_telegram_id}: {e}")
                     await message.answer(
                         f"⚠️ Подписка успешно продлена, но не удалось отправить уведомление пользователю: {str(e)}",
                         reply_markup=keyboard,
@@ -873,6 +1038,7 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                 return True
             else:
                 new_sub = await create_subscription(session, user.id, end_date, 0, "admin_grant")
+                new_sub_end_date = new_sub.end_date
                 await create_payment_log(
                     session,
                     user_id=user.id,
@@ -883,9 +1049,10 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                     transaction_id=None,
                     details=details,
                 )
-                days_text = "бессрочно" if is_lifetime else f"до {new_sub.end_date.strftime('%d.%m.%Y')}"
+
+                days_text = "бессрочно" if is_lifetime else f"до {new_sub_end_date.strftime('%d.%m.%Y')}"
                 await message.answer(
-                    f"✅ Пользователю {user.first_name or ''} {user.last_name or ''} (@{user.username or str(user.telegram_id)}) успешно выдана подписка!\n\n"
+                    f"✅ Пользователю {user_first_name} {user_last_name} (@{user_username or str(user_telegram_id)}) успешно выдана подписка!\n\n"
                     f"Подписка активна {days_text}.",
                     reply_markup=keyboard,
                 )
@@ -896,9 +1063,9 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                         "Вы можете перейти в закрытый канал по кнопке ниже:"
                     )
                     user_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔐 Войти в Mom's Club", url=CLUB_CHANNEL_URL)]])
-                    await bot.send_message(user.telegram_id, user_notification, reply_markup=user_keyboard)
+                    await bot.send_message(user_telegram_id, user_notification, reply_markup=user_keyboard)
                 except Exception as e:
-                    logger.error(f"Ошибка уведомления пользователя {user.telegram_id}: {e}")
+                    logger.error(f"Ошибка уведомления пользователя {user_telegram_id}: {e}")
                     await message.answer(
                         f"⚠️ Подписка успешно выдана, но не удалось отправить уведомление пользователю: {str(e)}",
                         reply_markup=keyboard,
@@ -935,37 +1102,9 @@ async def process_grant_badge_menu(callback: CallbackQuery):
         current_badges = await get_user_badges(session, user.id)
         current_badge_types = {badge.badge_type for badge in current_badges}
         
-        # Список всех доступных badges
-        # Автоматические badges
-        automatic_badges = [
-            ('first_payment', '💳 Первая оплата'),
-            ('referral_1', '🤝 Пригласила друга'),
-            ('referral_5', '🌟 Пригласила 5 друзей'),
-            ('referral_10', '✨ Пригласила 10 друзей'),
-            ('month_in_club', '📅 Месяц в клубе'),
-            ('half_year_in_club', '💫 Полгода в клубе'),
-            ('year_in_club', '🏆 Год в клубе'),
-            ('loyal_customer', '💎 Верный клиент'),
-            ('platinum_customer', '👑 Платиновый клиент'),
-            ('active_member', '🔥 Активный участник'),
-            ('birthday_gift', '🎂 День рождения'),
-        ]
-        
-        # Специальные badges (только от админов)
-        special_badges = [
-            ('community_helper', '💝 Помощь сообществу'),
-            ('inspiration', '✨ Источник вдохновения'),
-            ('early_supporter', '🌱 Первопроходец'),
-            ('ambassador', '🌟 Амбассадор клуба'),
-            ('special_thanks', '💖 Особая благодарность'),
-            ('milestone_celebrator', '🎉 Празднуем вместе'),
-            ('supportive_friend', '🤗 Поддерживающая подруга'),
-            ('creative_soul', '🎨 Творческая душа'),
-            ('motivator', '💪 Мотиватор'),
-            ('heart_of_club', '💕 Сердце клуба'),
-            ('creator_special', '💋 Моя сучка от создателя Moms Club'),
-        ]
-        
+        # Используем константы из utils.constants
+        automatic_badges = AUTOMATIC_BADGES
+        special_badges = SPECIAL_BADGES
         all_badges = automatic_badges + special_badges
         
         # Формируем клавиатуру с разделением на категории
@@ -1018,7 +1157,7 @@ async def process_grant_badge_menu(callback: CallbackQuery):
         
         await callback.message.edit_text(
             f"<b>🏆 Выдача достижения</b>\n\n"
-            f"Пользователь: {user.first_name or ''} {user.last_name or ''} (@{user.username or 'нет username'})\n\n"
+            f"Пользователь: {user_first_name} {user_last_name} (@{user.username or 'нет username'})\n\n"
             f"<b>📋 Автоматические достижения</b> — выдаются автоматически при выполнении условий\n"
             f"<b>⭐ Специальные достижения</b> — выдаются только администраторами в знак особой благодарности\n\n"
             f"Выберите достижение для выдачи:",
@@ -1049,6 +1188,12 @@ async def process_badge_grant_confirm(callback: CallbackQuery):
         badge_type = parts[2]
     except Exception:
         await callback.answer("Некорректные данные", show_alert=True)
+        return
+    
+    # Валидация badge_type
+    if badge_type not in VALID_BADGE_TYPES:
+        await callback.answer(f"❌ Неизвестный тип достижения: {badge_type}", show_alert=True)
+        logger.warning(f"Попытка выдать недопустимый badge_type '{badge_type}' пользователю {telegram_id} админом {callback.from_user.id}")
         return
     
     async with AsyncSessionLocal() as session:
@@ -1122,37 +1267,11 @@ async def process_revoke_badge_menu(callback: CallbackQuery):
             await process_update_user_info(callback, telegram_id)
             return
         
-        # Словарь для отображения названий badges
-        badge_names = {
-            'first_payment': '💳 Первая оплата',
-            'referral_1': '🤝 Пригласила друга',
-            'referral_5': '🌟 Пригласила 5 друзей',
-            'referral_10': '✨ Пригласила 10 друзей',
-            'month_in_club': '📅 Месяц в клубе',
-            'half_year_in_club': '💫 Полгода в клубе',
-            'year_in_club': '🏆 Год в клубе',
-            'loyal_customer': '💎 Верный клиент',
-            'platinum_customer': '👑 Платиновый клиент',
-            'active_member': '🔥 Активный участник',
-            'birthday_gift': '🎂 День рождения',
-            'community_helper': '💝 Помощь сообществу',
-            'inspiration': '✨ Источник вдохновения',
-            'early_supporter': '🌱 Первопроходец',
-            'ambassador': '🌟 Амбассадор клуба',
-            'special_thanks': '💖 Особая благодарность',
-            'milestone_celebrator': '🎉 Празднуем вместе',
-            'supportive_friend': '🤗 Поддерживающая подруга',
-            'creative_soul': '🎨 Творческая душа',
-            'motivator': '💪 Мотиватор',
-            'heart_of_club': '💕 Сердце клуба',
-            'creator_special': '💋 Моя сучка от создателя Moms Club',
-        }
-        
         # Формируем клавиатуру с текущими badges
         keyboard_buttons = []
         
         for badge in current_badges:
-            badge_name = badge_names.get(badge.badge_type, badge.badge_type)
+            badge_name = BADGE_NAMES.get(badge.badge_type, badge.badge_type)
             keyboard_buttons.append([InlineKeyboardButton(
                 text=f"🗑️ {badge_name}",
                 callback_data=f"admin_badge_revoke_confirm:{telegram_id}:{badge.badge_type}"
@@ -1167,7 +1286,7 @@ async def process_revoke_badge_menu(callback: CallbackQuery):
         
         await callback.message.edit_text(
             f"<b>🗑️ Удаление достижения</b>\n\n"
-            f"Пользователь: {user.first_name or ''} {user.last_name or ''} (@{user.username or 'нет username'})\n\n"
+            f"Пользователь: {user_first_name} {user_last_name} (@{user.username or 'нет username'})\n\n"
             f"<b>⚠️ Внимание:</b> Достижение будет удалено без уведомления пользователя.\n\n"
             f"Выберите достижение для удаления:",
             reply_markup=keyboard,
@@ -1220,6 +1339,390 @@ async def process_badge_revoke_confirm(callback: CallbackQuery):
         
         # Возвращаемся к меню удаления badge
         await process_revoke_badge_menu(callback)
+
+
+async def get_lifetime_subscriptions_users(session, page: int = 0):
+    """Получает список пользователей с пожизненными подписками с пагинацией"""
+    offset = page * LIFETIME_SUBSCRIPTIONS_PAGE_SIZE
+    
+    # Получаем активные подписки с end_date >= LIFETIME_THRESHOLD
+    query = (
+        select(User, Subscription)
+        .join(Subscription, User.id == Subscription.user_id)
+        .where(
+            and_(
+                Subscription.is_active == True,
+                Subscription.end_date >= LIFETIME_THRESHOLD
+            )
+        )
+        .order_by(User.created_at.desc())
+        .offset(offset)
+        .limit(LIFETIME_SUBSCRIPTIONS_PAGE_SIZE)
+    )
+    
+    result = await session.execute(query)
+    users_with_subs = result.all()
+    
+    # Получаем общее количество для пагинации
+    count_query = (
+        select(func.count(User.id))
+        .join(Subscription, User.id == Subscription.user_id)
+        .where(
+            and_(
+                Subscription.is_active == True,
+                Subscription.end_date >= LIFETIME_THRESHOLD
+            )
+        )
+    )
+    count_result = await session.execute(count_query)
+    total_count = count_result.scalar() or 0
+    
+    return users_with_subs, total_count
+
+
+@users_router.callback_query(F.data.startswith("admin_top_active_users:"))
+async def process_top_active_users_list(callback: CallbackQuery):
+    """Отображает список топ активных пользователей в группе"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    try:
+        page = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        page = 0
+
+    async with AsyncSessionLocal() as session:
+        users_with_activity, total_count = await get_top_active_users(session, limit=10, page=page)
+        
+        if not users_with_activity:
+            await callback.message.edit_text(
+                "<b>🔥 Топ активных в группе</b>\n\n"
+                "Пока нет данных об активности пользователей.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="« Назад", callback_data="admin_users_menu")]
+                ]),
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            return
+
+        # Формируем заголовок
+        message_text = f"<b>🔥 Топ активных в группе</b>"
+        
+        # Формируем клавиатуру с пагинацией
+        keyboard_buttons = []
+        
+        # Кнопки пагинации
+        total_pages = (total_count + 9) // 10  # 10 пользователей на страницу
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"admin_top_active_users:{page - 1}"))
+            nav_buttons.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="admin_top_active_users_info"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"admin_top_active_users:{page + 1}"))
+            keyboard_buttons.append(nav_buttons)
+        
+        # Кнопки пользователей
+        start_idx = page * 10
+        for i, (user_obj, activity) in enumerate(users_with_activity, 1):
+            user_name = user_obj.first_name or ""
+            if user_obj.last_name:
+                user_name += f" {user_obj.last_name}"
+            if user_obj.username:
+                user_name += f" (@{user_obj.username})"
+            if not user_name.strip():
+                user_name = f"ID: {user_obj.telegram_id}"
+            
+            # Обрезаем имя если слишком длинное
+            if len(user_name) > 30:
+                user_name = user_name[:27] + "..."
+            
+            button_text = f"#{start_idx + i} {user_name} ({activity.message_count} сообщ.)"
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=f"admin_user_info_from_top:{user_obj.telegram_id}:{page}"
+                )
+            ])
+        
+        # Кнопка назад
+        keyboard_buttons.append([InlineKeyboardButton(text="« Назад", callback_data="admin_users_menu")])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        
+        try:
+            await callback.message.edit_text(message_text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании сообщения: {e}")
+            await callback.message.answer(message_text, reply_markup=keyboard, parse_mode="HTML")
+        
+        await callback.answer()
+
+
+@users_router.callback_query(F.data.startswith("admin_user_info_from_top:"))
+async def process_user_info_from_top_list(callback: CallbackQuery):
+    """Обработчик клика на пользователя из списка топ активных"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        top_page = int(parts[2]) if len(parts) > 2 else 0
+        logger.info(f"[admin_users] Обработчик admin_user_info_from_top вызван для telegram_id: {telegram_id}, page: {top_page}")
+    except (ValueError, IndexError) as e:
+        logger.error(f"[admin_users] Ошибка при парсинге admin_user_info_from_top: {e}, data: {callback.data}")
+        await callback.answer("Ошибка: неверный формат данных", show_alert=True)
+        return
+
+    try:
+        await process_update_user_info(callback, telegram_id, return_to_top_page=top_page)
+        await callback.answer()
+        logger.info(f"[admin_users] admin_user_info_from_top успешно обработан для telegram_id: {telegram_id}")
+    except Exception as e:
+        logger.error(f"[admin_users] Ошибка в process_user_info_from_top для telegram_id {telegram_id}: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке информации о пользователе", show_alert=True)
+
+
+@users_router.callback_query(F.data == "admin_filter_activity")
+async def process_filter_activity_menu(callback: CallbackQuery):
+    """Показывает меню фильтров по активности"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔥 Топ активных", callback_data="admin_top_active_users:0")],
+            [InlineKeyboardButton(text="😴 Неактивные 7 дней", callback_data="admin_inactive_users:7:0")],
+            [InlineKeyboardButton(text="😴 Неактивные 30 дней", callback_data="admin_inactive_users:30:0")],
+            [InlineKeyboardButton(text="« Назад", callback_data="admin_users_menu")],
+        ]
+    )
+
+    await callback.message.edit_text(
+        "<b>🔍 Фильтр по активности</b>\n\n"
+        "Выберите фильтр:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@users_router.callback_query(F.data.startswith("admin_inactive_users:"))
+async def process_inactive_users_list(callback: CallbackQuery):
+    """Отображает список неактивных пользователей"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    try:
+        parts = callback.data.split(":")
+        days = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+    except (ValueError, IndexError):
+        days = 30
+        page = 0
+
+    async with AsyncSessionLocal() as session:
+        users_with_activity, total_count = await get_inactive_users(session, days=days, limit=10, page=page)
+        
+        if not users_with_activity:
+            await callback.message.edit_text(
+                f"<b>😴 Неактивные пользователи ({days} дней)</b>\n\n"
+                "Неактивных пользователей не найдено.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="« Назад", callback_data="admin_filter_activity")]
+                ]),
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            return
+
+        # Формируем заголовок
+        message_text = f"<b>😴 Неактивные пользователи ({days} дней)</b>"
+        
+        # Формируем клавиатуру с пагинацией
+        keyboard_buttons = []
+        
+        # Кнопки пагинации
+        total_pages = (total_count + 9) // 10
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"admin_inactive_users:{days}:{page - 1}"))
+            nav_buttons.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="admin_inactive_users_info"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"admin_inactive_users:{days}:{page + 1}"))
+            keyboard_buttons.append(nav_buttons)
+        
+        # Кнопки пользователей
+        start_idx = page * 10
+        for i, (user_obj, activity) in enumerate(users_with_activity, 1):
+            user_name = user_obj.first_name or ""
+            if user_obj.last_name:
+                user_name += f" {user_obj.last_name}"
+            if user_obj.username:
+                user_name += f" (@{user_obj.username})"
+            if not user_name.strip():
+                user_name = f"ID: {user_obj.telegram_id}"
+            
+            # Обрезаем имя если слишком длинное
+            if len(user_name) > 30:
+                user_name = user_name[:27] + "..."
+            
+            # Форматируем последнюю активность
+            if activity and activity.last_activity:
+                last_activity_str = activity.last_activity.strftime("%d.%m.%Y")
+            else:
+                last_activity_str = "никогда"
+            
+            button_text = f"#{start_idx + i} {user_name} (последняя: {last_activity_str})"
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=f"admin_user_info_from_inactive:{user_obj.telegram_id}:{days}:{page}"
+                )
+            ])
+        
+        # Кнопка назад
+        keyboard_buttons.append([InlineKeyboardButton(text="« Назад", callback_data="admin_filter_activity")])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        
+        try:
+            await callback.message.edit_text(message_text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании сообщения: {e}")
+            await callback.message.answer(message_text, reply_markup=keyboard, parse_mode="HTML")
+        
+        await callback.answer()
+
+
+@users_router.callback_query(F.data.startswith("admin_user_info_from_inactive:"))
+async def process_user_info_from_inactive_list(callback: CallbackQuery):
+    """Обработчик клика на пользователя из списка неактивных"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        days = int(parts[2])
+        inactive_page = int(parts[3]) if len(parts) > 3 else 0
+        logger.info(f"[admin_users] Обработчик admin_user_info_from_inactive вызван для telegram_id: {telegram_id}, days: {days}, page: {inactive_page}")
+    except (ValueError, IndexError) as e:
+        logger.error(f"[admin_users] Ошибка при парсинге admin_user_info_from_inactive: {e}, data: {callback.data}")
+        await callback.answer("Ошибка: неверный формат данных", show_alert=True)
+        return
+
+    try:
+        await process_update_user_info(callback, telegram_id, return_to_inactive_days=days, return_to_inactive_page=inactive_page)
+        await callback.answer()
+        logger.info(f"[admin_users] admin_user_info_from_inactive успешно обработан для telegram_id: {telegram_id}")
+    except Exception as e:
+        logger.error(f"[admin_users] Ошибка в process_user_info_from_inactive для telegram_id {telegram_id}: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке информации о пользователе", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_lifetime_subscriptions:"))
+async def process_lifetime_subscriptions_list(callback: CallbackQuery):
+    """Отображает список пользователей с пожизненными подписками с пагинацией"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    try:
+        page = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        page = 0
+
+    users_with_subs, total_count = await get_lifetime_subscriptions_users(session, page)
+    
+    if not users_with_subs:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад", callback_data="admin_users_menu")]
+            ]
+        )
+        await callback.message.edit_text(
+            "<b>∞ Пожизненные подписки</b>\n\n"
+            "Пользователей с пожизненными подписками не найдено.",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+
+    # Формируем заголовок (без детального описания - только кнопки)
+    message_text = f"<b>∞ Пожизненные подписки</b>"
+    
+    # Формируем клавиатуру с пагинацией
+    keyboard_buttons = []
+    
+    # Кнопки пагинации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin_lifetime_subscriptions:{page - 1}"))
+    
+    total_pages = (total_count + LIFETIME_SUBSCRIPTIONS_PAGE_SIZE - 1) // LIFETIME_SUBSCRIPTIONS_PAGE_SIZE
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"admin_lifetime_subscriptions:{page + 1}"))
+    
+    if nav_buttons:
+        keyboard_buttons.append(nav_buttons)
+    
+    # Кнопки для каждого пользователя
+    for user_obj, subscription in users_with_subs:
+        user_name = user_obj.first_name or ""
+        if user_obj.last_name:
+            user_name += f" {user_obj.last_name}"
+        if user_obj.username:
+            user_name += f" (@{user_obj.username})"
+        if not user_name.strip():
+            user_name = f"ID: {user_obj.telegram_id}"
+        
+        # Обрезаем имя если слишком длинное
+        if len(user_name) > 30:
+            user_name = user_name[:27] + "..."
+        
+        keyboard_buttons.append([
+            InlineKeyboardButton(
+                text=f"👤 {user_name}",
+                callback_data=f"admin_user_info_from_lifetime:{user_obj.telegram_id}:{page}"
+            )
+        ])
+    
+    # Кнопка назад
+    keyboard_buttons.append([InlineKeyboardButton(text="« Назад", callback_data="admin_users_menu")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    
+    # Информация о странице (без добавления в текст - только в кнопках навигации)
+    
+    try:
+        await callback.message.edit_text(message_text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании сообщения: {e}")
+        await callback.message.answer(message_text, reply_markup=keyboard, parse_mode="HTML")
+    
+    await callback.answer()
 
 
 def register_admin_users_handlers(dp):

@@ -10,11 +10,17 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Tuple, Optional, Dict, Any
+from functools import wraps
 from dotenv import load_dotenv
 from yookassa import Configuration, Payment
 from yookassa.domain.notification import WebhookNotification
 
 load_dotenv()
+
+# Настройки timeout и retry для YooKassa API
+YOOKASSA_API_TIMEOUT = int(os.getenv("YOOKASSA_API_TIMEOUT", "30"))  # 30 секунд по умолчанию
+YOOKASSA_MAX_RETRIES = int(os.getenv("YOOKASSA_MAX_RETRIES", "3"))  # 3 попытки по умолчанию
+YOOKASSA_RETRY_DELAY = float(os.getenv("YOOKASSA_RETRY_DELAY", "1.0"))  # 1 секунда базовая задержка
 
 # Импортируем конфигурацию ЮКассы
 from config import YOOKASSA_CONFIG
@@ -30,6 +36,46 @@ logger = logging.getLogger("payment_yookassa")
 logger.setLevel(logging.INFO)
 
 
+def retry_with_backoff(max_retries: int = YOOKASSA_MAX_RETRIES, 
+                       base_delay: float = YOOKASSA_RETRY_DELAY,
+                       exceptions: tuple = (Exception,)):
+    """
+    Декоратор для повторных попыток с экспоненциальной задержкой.
+    
+    Используется для обработки временных сетевых ошибок при обращении к YooKassa API.
+    
+    Args:
+        max_retries: максимальное количество попыток
+        base_delay: базовая задержка в секундах (удваивается при каждой попытке)
+        exceptions: кортеж исключений, при которых нужно повторять попытку
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # Экспоненциальная задержка
+                        logger.warning(
+                            f"Ошибка при вызове {func.__name__} (попытка {attempt + 1}/{max_retries}): {e}. "
+                            f"Повтор через {delay:.1f} сек..."
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"Все {max_retries} попыток {func.__name__} исчерпаны. Последняя ошибка: {e}")
+            # Если все попытки исчерпаны, пробрасываем последнее исключение
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+@retry_with_backoff(max_retries=YOOKASSA_MAX_RETRIES, 
+                   base_delay=YOOKASSA_RETRY_DELAY,
+                   exceptions=(ConnectionError, TimeoutError, OSError))
 def create_payment_link(amount: int,
                        user_id: int,
                        description: str,
@@ -130,6 +176,9 @@ def create_payment_link(amount: int,
         return None, None, None
 
 
+@retry_with_backoff(max_retries=YOOKASSA_MAX_RETRIES,
+                   base_delay=YOOKASSA_RETRY_DELAY,
+                   exceptions=(ConnectionError, TimeoutError, OSError))
 def create_autopayment(user_id: int,
                       amount: int,
                       description: str,
@@ -190,6 +239,9 @@ def create_autopayment(user_id: int,
         return "failed", None
 
 
+@retry_with_backoff(max_retries=YOOKASSA_MAX_RETRIES,
+                   base_delay=YOOKASSA_RETRY_DELAY,
+                   exceptions=(ConnectionError, TimeoutError, OSError))
 def check_payment_status(payment_id: str, expected_amount: float = None) -> Tuple[str, Optional[Dict[str, Any]]]:
     """
     Проверяет статус платежа в ЮКассе.
@@ -234,33 +286,101 @@ def check_payment_status(payment_id: str, expected_amount: float = None) -> Tupl
         return "failed", None
 
 
-def verify_yookassa_signature(notification_body: str, client_ip: str = None) -> bool:
+def verify_yookassa_signature(notification_body: str, signature_header: str = None, client_ip: str = None) -> bool:
     """
-    Проверяет подпись вебхука от ЮКассы.
-    ЮКасса проверяет по IP адресам, дополнительная проверка не требуется.
-
+    Проверяет криптографическую подпись HMAC-SHA256 вебхука от ЮКассы.
+    
+    ЮКасса подписывает вебхуки с помощью HMAC-SHA256. Подпись передается в заголовке
+    'X-Content-HMAC-SHA256' или 'X-Idempotence-Key' (в зависимости от версии API).
+    
     Args:
-        notification_body: тело уведомления
+        notification_body: необработанное тело уведомления (bytes или str)
+        signature_header: значение заголовка с подписью (опционально)
         client_ip: IP адрес клиента (опционально, для логирования)
 
     Returns:
         bool: True если подпись корректна
     """
+    import hmac
+    import hashlib
+    import json
+    
     try:
-        # ЮКасса использует IP-based проверку
-        # Запросы приходят только с определенных IP адресов
-        # Дополнительная проверка подписи обычно не требуется
+        # Получаем secret key из конфигурации
+        from config import YOOKASSA_SECRET_KEY
+        if not YOOKASSA_SECRET_KEY:
+            logger.error("YOOKASSA_SECRET_KEY не задан в конфигурации")
+            return False
         
-        # Но для безопасности можно проверить структуру JSON
-        import json
-        data = json.loads(notification_body)
+        # Преобразуем тело в bytes если это строка
+        if isinstance(notification_body, str):
+            body_bytes = notification_body.encode('utf-8')
+        else:
+            body_bytes = notification_body
         
-        # Проверяем обязательные поля
-        required_fields = ['type', 'event', 'object']
-        for field in required_fields:
-            if field not in data:
-                logger.warning(f"Отсутствует обязательное поле: {field}")
+        # Вычисляем HMAC-SHA256 подпись
+        expected_signature = hmac.new(
+            YOOKASSA_SECRET_KEY.encode('utf-8'),
+            body_bytes,
+            hashlib.sha256
+        ).hexdigest()
+        
+        # Если подпись передана в заголовке, сравниваем её
+        if signature_header:
+            # Используем compare_digest для защиты от timing attacks
+            if not hmac.compare_digest(expected_signature, signature_header):
+                logger.error(f"🚨 БЕЗОПАСНОСТЬ: Неверная HMAC подпись вебхука от IP {client_ip}")
+                logger.debug(f"Ожидаемая подпись: {expected_signature[:16]}..., получена: {signature_header[:16]}...")
                 return False
+            logger.debug(f"✅ HMAC подпись вебхука проверена успешно")
+        else:
+            # Если подпись не передана, проверяем IP адрес
+            # Если это не IP ЮКассы, отклоняем запрос
+            # Список доверенных IP ЮКассы
+            YOOKASSA_IPS = [
+                "185.71.76.0/27",
+                "185.71.77.0/27",
+                "77.75.153.0/25",
+                "77.75.156.11",
+                "77.75.156.35",
+                "77.75.154.128/25",
+                "2a02:5180::/32"
+            ]
+            
+            if client_ip:
+                import ipaddress
+                is_yookassa = False
+                try:
+                    ip_obj = ipaddress.ip_address(client_ip)
+                    for yookassa_net in YOOKASSA_IPS:
+                        try:
+                            if ip_obj in ipaddress.ip_network(yookassa_net, strict=False):
+                                is_yookassa = True
+                                break
+                        except ValueError:
+                            if str(ip_obj) == yookassa_net:
+                                is_yookassa = True
+                                break
+                except ValueError:
+                    pass
+                
+                if not is_yookassa:
+                    logger.error(f"🚨 БЕЗОПАСНОСТЬ: Запрос без подписи от не-ЮКасса IP: {client_ip}")
+                    return False
+                # Если IP ЮКассы, но подпись не передана - возможно старый формат API
+                logger.warning(f"⚠️ Подпись не передана в заголовке, но IP ЮКассы: {client_ip}. Проверяем структуру JSON.")
+        
+        # Дополнительная проверка структуры JSON
+        try:
+            data = json.loads(notification_body if isinstance(notification_body, str) else notification_body.decode('utf-8'))
+            required_fields = ['type', 'event', 'object']
+            for field in required_fields:
+                if field not in data:
+                    logger.warning(f"Отсутствует обязательное поле: {field}")
+                    return False
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка парсинга JSON вебхука: {e}")
+            return False
         
         # Логируем IP для отладки
         if client_ip:
@@ -269,7 +389,7 @@ def verify_yookassa_signature(notification_body: str, client_ip: str = None) -> 
         return True
         
     except Exception as e:
-        logger.error(f"Ошибка проверки webhook ЮКассы: {e}")
+        logger.error(f"Ошибка проверки webhook ЮКассы: {e}", exc_info=True)
         return False
 
 

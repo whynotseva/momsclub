@@ -137,8 +137,13 @@ async def loyalty_show_user_info(message: types.Message, state: FSMContext):
         ]
         info_text = "\n".join(lines)
         if active_sub:
-            end_date = active_sub.end_date.strftime('%d.%m.%Y')
-            info_text += (f"\n<b>📅 Подписка</b>\n" + html_kv("До", end_date) + "\n" + html_kv("Статус", "Активна" if active_sub.is_active else "Неактивна") + "\n")
+            # Проверяем, является ли подписка бесконечной
+            LIFETIME_THRESHOLD = datetime(2099, 1, 1)
+            if active_sub.end_date >= LIFETIME_THRESHOLD:
+                info_text += (f"\n<b>📅 Подписка</b>\n" + html_kv("Статус", "∞ Пожизненная подписка") + "\n")
+            else:
+                end_date = active_sub.end_date.strftime('%d.%m.%Y')
+                info_text += (f"\n<b>📅 Подписка</b>\n" + html_kv("До", end_date) + "\n" + html_kv("Статус", "Активна" if active_sub.is_active else "Неактивна") + "\n")
         else:
             info_text += "\n<b>📅 Подписка</b>\nНет активной подписки\n"
         if user.first_payment_date:

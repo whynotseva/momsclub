@@ -119,6 +119,79 @@ def is_yookassa_ip(ip: str) -> bool:
     return False
 
 
+def mask_sensitive_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Маскирует персональные данные в словаре для безопасного логирования.
+    
+    Маскирует следующие поля:
+    - phone, phone_number, tel - номера телефонов
+    - email, e_mail - email адреса
+    - user_id, telegram_id - ID пользователей (можно оставить частично)
+    - card_number, pan - номера карт
+    - cvc, cvv - коды безопасности карт
+    
+    Args:
+        data: словарь с данными для маскировки
+        
+    Returns:
+        словарь с замаскированными данными
+    """
+    if not isinstance(data, dict):
+        return data
+    
+    masked = {}
+    sensitive_keys = [
+        'phone', 'phone_number', 'tel', 'mobile',
+        'email', 'e_mail', 'mail',
+        'card_number', 'pan', 'card',
+        'cvc', 'cvv', 'security_code',
+        'passport', 'passport_number',
+        'inn', 'snils'
+    ]
+    
+    # Поля, которые можно показать частично (первые/последние символы)
+    partially_masked_keys = ['user_id', 'telegram_id']
+    
+    for key, value in data.items():
+        key_lower = key.lower()
+        
+        # Полная маскировка для чувствительных полей
+        if any(sensitive in key_lower for sensitive in sensitive_keys):
+            if isinstance(value, str) and value:
+                # Маскируем все кроме первых 2 и последних 2 символов
+                if len(value) > 4:
+                    masked[key] = value[:2] + '*' * (len(value) - 4) + value[-2:]
+                else:
+                    masked[key] = '*' * len(value)
+            else:
+                masked[key] = '***MASKED***'
+        
+        # Частичная маскировка для ID (показываем только последние 4 цифры)
+        elif any(partial in key_lower for partial in partially_masked_keys):
+            if isinstance(value, (str, int)):
+                value_str = str(value)
+                if len(value_str) > 4:
+                    masked[key] = '***' + value_str[-4:]
+                else:
+                    masked[key] = '***'
+            else:
+                masked[key] = value
+        
+        # Рекурсивная обработка вложенных словарей
+        elif isinstance(value, dict):
+            masked[key] = mask_sensitive_data(value)
+        
+        # Рекурсивная обработка списков
+        elif isinstance(value, list):
+            masked[key] = [mask_sensitive_data(item) if isinstance(item, dict) else item for item in value]
+        
+        # Остальные поля оставляем как есть
+        else:
+            masked[key] = value
+    
+    return masked
+
+
 async def process_successful_payment(session, payment_log_entry, yookassa_payment_data: Optional[Dict[str, Any]] = None):
     """
     Обрабатывает успешный платеж: создает/продлевает подписку
@@ -150,13 +223,14 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
             # Продлеваем существующую
             payment_logger.info(f"Продление подписки для user_id={user.id}")
             
+            # renewal_price будет установлен позже после расчета
             subscription = await extend_subscription(
                 session, 
                 user_id=user.id, 
                 days=subscription_days,
                 price=payment_amount,
                 payment_id=payment_log_entry.transaction_id,
-                renewal_price=payment_amount,
+                renewal_price=None,  # Будет установлен позже
                 renewal_duration_days=subscription_days
             )
             
@@ -165,13 +239,14 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
             # Создаем новую
             payment_logger.info(f"Создание новой подписки для user_id={user.id}")
             
+            # renewal_price будет установлен позже после расчета
             subscription = await create_subscription(
                 session, 
                 user_id=user.id, 
                 end_date=datetime.now() + timedelta(days=subscription_days),
                 price=payment_amount,
                 payment_id=payment_log_entry.transaction_id,
-                renewal_price=payment_amount,
+                renewal_price=None,  # Будет установлен позже
                 renewal_duration_days=subscription_days
             )
             
@@ -201,9 +276,48 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
         
         applied_discount = effective_discount(user)
         
+        # Определяем базовую цену тарифа по количеству дней
+        def get_base_price_by_days(days: int) -> int:
+            from utils.constants import SUBSCRIPTION_PRICE, SUBSCRIPTION_PRICE_2MONTHS, SUBSCRIPTION_PRICE_3MONTHS
+            if days == 30:
+                return SUBSCRIPTION_PRICE  # 990₽
+            elif days == 60:
+                return SUBSCRIPTION_PRICE_2MONTHS  # 1790₽
+            elif days == 90:
+                return SUBSCRIPTION_PRICE_3MONTHS  # 2490₽
+            else:
+                # По умолчанию 30 дней
+                return SUBSCRIPTION_PRICE
+        
+        # Определяем цену для следующего автопродления
+        base_price = get_base_price_by_days(subscription_days)
+        
+        # Проверяем, была ли применена разовая скидка промокода
+        was_one_time_discount = user.one_time_discount_percent > 0 and applied_discount == user.one_time_discount_percent
+        
+        # Вычисляем renewal_price
+        if was_one_time_discount:
+            # Была разовая скидка - renewal_price = базовая цена с постоянной скидкой (если есть)
+            if user.lifetime_discount_percent > 0:
+                from loyalty.service import price_with_discount
+                calculated_renewal_price = price_with_discount(base_price, user.lifetime_discount_percent)
+            else:
+                calculated_renewal_price = base_price  # Обычная цена без скидок
+        else:
+            # Не было разовой скидки - renewal_price = цена с постоянной скидкой (если есть)
+            if user.lifetime_discount_percent > 0:
+                from loyalty.service import price_with_discount
+                calculated_renewal_price = price_with_discount(base_price, user.lifetime_discount_percent)
+            else:
+                calculated_renewal_price = base_price
+        
+        # Обновляем renewal_price в подписке
+        subscription.renewal_price = calculated_renewal_price
+        session.add(subscription)
+        
         # Проверяем, была ли применена скидка (разовая или постоянная)
         # Разовую скидку сбрасываем, постоянную оставляем
-        if user.one_time_discount_percent > 0 and applied_discount == user.one_time_discount_percent:
+        if was_one_time_discount:
             # Сбрасываем только разовую скидку (старая логика, если кто-то использовал промокод)
             old_discount = user.one_time_discount_percent
             user.one_time_discount_percent = 0
@@ -481,21 +595,33 @@ async def _process_webhook(request: Request):
             # Дополнительная проверка для не-ЮКасса IP
             # Если это не ЮКасса, но подпись валидна - возможно тестирование или прокси
         
-        # Получаем тело запроса
+        # Получаем тело запроса (необработанное, для проверки подписи)
         body = await request.body()
         body_str = body.decode('utf-8')
         
         webhook_logger.info(f"Тело запроса: {body_str[:500]}...")
         
+        # Получаем заголовок с подписью HMAC-SHA256
+        # YooKassa может использовать разные заголовки в зависимости от версии API
+        signature_header = request.headers.get("X-Content-HMAC-SHA256") or \
+                          request.headers.get("X-Idempotence-Key") or \
+                          request.headers.get("X-YooKassa-Signature")
+        
         # Валидация подписи вебхука
-        if not verify_yookassa_signature(body_str, client_ip):
+        if not verify_yookassa_signature(body_str, signature_header=signature_header, client_ip=client_ip):
             webhook_logger.error(f"🚨 БЕЗОПАСНОСТЬ: Вебхук не прошёл валидацию подписи от IP {client_ip}. Возможная атака!")
             # Логируем подозрительную активность
-            webhook_logger.error(f"Подозрительный запрос: IP={client_ip}, Body length={len(body_str)}")
+            webhook_logger.error(f"Подозрительный запрос: IP={client_ip}, Body length={len(body_str)}, Signature header present={signature_header is not None}")
+            # Возвращаем 403 Forbidden при неверной подписи
             return JSONResponse({"status": "error", "message": "Invalid signature"}, status_code=403)
         
         # Парсим JSON
-        data = json.loads(body_str)
+        try:
+            data = json.loads(body_str)
+        except json.JSONDecodeError as e:
+            webhook_logger.error(f"Ошибка парсинга JSON вебхука: {e}")
+            # Возвращаем 400 Bad Request при невалидном JSON
+            return JSONResponse({"status": "error", "message": "Invalid JSON"}, status_code=400)
         
         # Получаем тип события
         event_type = data.get("event")
@@ -520,15 +646,29 @@ async def _process_webhook(request: Request):
         else:
             webhook_logger.warning(f"Неизвестный тип события: {event_type}")
         
-        return JSONResponse({"status": "success"})
+        # Возвращаем 200 OK только при успешной обработке
+        return JSONResponse({"status": "success"}, status_code=200)
         
+    except HTTPException:
+        # Пробрасываем HTTP исключения наверх (они уже имеют правильный статус код)
+        raise
     except Exception as e:
-        webhook_logger.error(f"Ошибка обработки вебхука ЮКассы: {e}", exc_info=True)
-        return JSONResponse({"status": "error", "message": str(e)})
+        webhook_logger.error(f"КРИТИЧЕСКАЯ ОШИБКА обработки вебхука ЮКассы: {e}", exc_info=True)
+        # Возвращаем 500 Internal Server Error при внутренних ошибках
+        # Это позволит YooKassa повторить запрос
+        return JSONResponse(
+            {"status": "error", "message": "Internal server error"},
+            status_code=500
+        )
 
 
 async def handle_payment_succeeded(payment):
-    """Обрабатывает успешный платеж"""
+    """Обрабатывает успешный платеж
+    
+    ВАЖНО: При ошибках в этой функции исключения пробрасываются наверх,
+    чтобы _process_webhook мог вернуть правильный HTTP статус (5xx),
+    что позволит YooKassa повторить запрос.
+    """
     try:
         payment_id = payment.id
         amount = int(float(payment.amount.value))
@@ -544,7 +684,9 @@ async def handle_payment_succeeded(payment):
             payment_datetime = date_parser.parse(payment.created_at)
         
         webhook_logger.info(f"Обработка успешного платежа: {payment_id}")
-        webhook_logger.info(f"Метаданные: {metadata}")
+        # Маскируем персональные данные перед логированием
+        masked_metadata = mask_sensitive_data(metadata)
+        webhook_logger.info(f"Метаданные (замаскированы): {masked_metadata}")
         if payment_datetime:
             webhook_logger.info(f"Время платежа от ЮКассы: {payment_datetime} (UTC)")
         else:
@@ -646,10 +788,15 @@ async def handle_payment_succeeded(payment):
         
     except Exception as e:
         webhook_logger.error(f"Ошибка в handle_payment_succeeded: {e}", exc_info=True)
+        # Пробрасываем исключение наверх, чтобы _process_webhook вернул 5xx
+        raise
 
 
 async def handle_payment_canceled(payment):
-    """Обрабатывает отмененный платеж"""
+    """Обрабатывает отмененный платеж
+    
+    ВАЖНО: При ошибках исключения пробрасываются наверх для правильной обработки.
+    """
     try:
         payment_id = payment.id
         
@@ -679,10 +826,15 @@ async def handle_payment_canceled(payment):
         
     except Exception as e:
         webhook_logger.error(f"Ошибка в handle_payment_canceled: {e}", exc_info=True)
+        # Пробрасываем исключение наверх
+        raise
 
 
 async def handle_payment_waiting(payment):
-    """Обрабатывает платеж в ожидании подтверждения"""
+    """Обрабатывает платеж в ожидании подтверждения
+    
+    ВАЖНО: При ошибках исключения пробрасываются наверх для правильной обработки.
+    """
     try:
         payment_id = payment.id
         webhook_logger.info(f"Платеж ожидает подтверждения: {payment_id}")
@@ -695,7 +847,9 @@ async def handle_payment_waiting(payment):
                 await session.commit()
         
     except Exception as e:
-        webhook_logger.error(f"Ошибка в handle_payment_waiting: {e}")
+        webhook_logger.error(f"Ошибка в handle_payment_waiting: {e}", exc_info=True)
+        # Пробрасываем исключение наверх
+        raise
 
 
 @app.get("/")

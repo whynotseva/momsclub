@@ -1,7 +1,8 @@
 from sqlalchemy import select, func, update, and_, or_, exists, Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint, case, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta, date
-from database.models import User, Subscription, PaymentLog, PromoCode, UserPromoCode, SubscriptionNotification, MessageTemplate, ScheduledMessage, ScheduledMessageRecipient, AutorenewalCancellationRequest, UserBadge, LoyaltyEvent, MigrationNotification
+from database.models import User, Subscription, PaymentLog, PromoCode, UserPromoCode, SubscriptionNotification, MessageTemplate, ScheduledMessage, ScheduledMessageRecipient, AutorenewalCancellationRequest, UserBadge, LoyaltyEvent, MigrationNotification, GroupActivity
+from utils.constants import RETURN_PROMO_CONFIG
 import random
 import string
 import logging
@@ -292,6 +293,14 @@ async def extend_subscription(db: AsyncSession,
             "renewal_duration_days": actual_renewal_duration_days,
             "is_active": True # Убедимся, что она активна
         }
+        
+        # УМНАЯ ЛОГИКА: Автоматически сдвигаем автоплатеж на новую дату окончания
+        if active_subscription.next_retry_attempt_at is not None:
+            update_values["next_retry_attempt_at"] = new_end_date
+            logger.info(
+                f"Автоплатеж для подписки ID {active_subscription.id} "
+                f"автоматически сдвинут на {new_end_date} (досрочное продление)"
+            )
         
         # Добавляем subscription_id только если он передан (Prodamus)
         if subscription_id is not None:
@@ -1511,6 +1520,10 @@ async def create_promo_code(
     logger.info(f"Создан промокод: {promo_code}")
     return promo_code
 
+async def get_promo_code_by_id(db: AsyncSession, promo_code_id: int) -> Optional[PromoCode]:
+    """Получает промокод по ID"""
+    return await db.get(PromoCode, promo_code_id)
+
 async def get_promo_code_by_code(db: AsyncSession, code: str) -> Optional[PromoCode]:
     """Получает промокод по его коду (регистронезависимо)"""
     query = select(PromoCode).where(func.upper(PromoCode.code) == code.upper())
@@ -1541,7 +1554,18 @@ async def use_promo_code(
     return user_promo_code_entry
 
 async def has_user_used_promo_code(db: AsyncSession, user_id: int, promo_code_id: int) -> bool:
-    """Проверяет, использовал ли пользователь уже этот промокод"""
+    """
+    Проверяет, использовал ли пользователь уже этот промокод
+    
+    Для персональных промокодов также проверяет, что промокод предназначен для этого пользователя
+    """
+    # Получаем промокод для проверки персональности
+    promo_code = await db.get(PromoCode, promo_code_id)
+    if promo_code and promo_code.is_personal:
+        # Если промокод персональный, проверяем, что он для этого пользователя
+        if promo_code.user_id != user_id:
+            return True  # Промокод не для этого пользователя = считается использованным
+    
     query = select(UserPromoCode).where(
         and_(
             UserPromoCode.user_id == user_id,
@@ -1720,6 +1744,267 @@ async def get_users_with_expired_subscriptions_for_reminder(db: AsyncSession, da
             filtered.append((user, subscription))
     
     return filtered
+
+
+# --- Функции для работы с персональными промокодами возврата ---
+
+async def create_personal_return_promo_code(
+    db: AsyncSession,
+    user_id: int,
+    loyalty_level: str,
+    return_promo_count: int,
+    days_valid: int = 7
+) -> PromoCode:
+    """
+    Создает персональный промокод для возврата пользователя с учетом защиты от злоупотреблений
+    
+    Args:
+        db: Сессия БД
+        user_id: ID пользователя
+        loyalty_level: Уровень лояльности ('none', 'silver', 'gold', 'platinum')
+        return_promo_count: Текущее количество полученных промокодов возврата
+        days_valid: Количество дней действия промокода (по умолчанию 7)
+    
+    Returns:
+        PromoCode: Созданный промокод
+    """
+    from utils.constants import DISCOUNT_REDUCTION_PER_USE
+    
+    # Получаем конфигурацию для уровня лояльности
+    config = RETURN_PROMO_CONFIG.get(loyalty_level, RETURN_PROMO_CONFIG['none'])
+    base_discount = config['discount_percent']
+    
+    # ВАЖНО: Уменьшаем скидку в зависимости от количества использований
+    # 1-й промокод: полная скидка
+    # 2-й промокод: -5%
+    # 3-й промокод: -10%
+    discount_reduction = return_promo_count * DISCOUNT_REDUCTION_PER_USE
+    discount_percent = max(base_discount - discount_reduction, 5)  # Минимум 5% скидка
+    
+    logger.info(
+        f"Расчет скидки для user_id={user_id}: "
+        f"базовая={base_discount}%, использований={return_promo_count}, "
+        f"уменьшение={discount_reduction}%, итоговая={discount_percent}%"
+    )
+    
+    # Генерируем уникальный код
+    promo_code_str = f"RETURN{user_id}"
+    
+    # Проверяем, не существует ли уже такой промокод
+    existing = await get_promo_code_by_code(db, promo_code_str)
+    if existing:
+        # Если существует, обновляем его
+        promo_code = existing
+        promo_code.discount_type = 'percent'
+        promo_code.value = discount_percent
+        promo_code.user_id = user_id
+        promo_code.is_personal = True
+        promo_code.auto_generated = True
+        promo_code.max_uses = 1
+        promo_code.current_uses = 0
+        promo_code.is_active = True
+        promo_code.expiry_date = datetime.now() + timedelta(days=days_valid)
+    else:
+        # Создаем новый
+        promo_code = PromoCode(
+            code=promo_code_str,
+            discount_type='percent',
+            value=discount_percent,
+            max_uses=1,
+            current_uses=0,
+            is_active=True,
+            expiry_date=datetime.now() + timedelta(days=days_valid),
+            user_id=user_id,
+            is_personal=True,
+            auto_generated=True
+        )
+        db.add(promo_code)
+    
+    await db.commit()
+    await db.refresh(promo_code)
+    
+    logger.info(
+        f"Создан персональный промокод RETURN{user_id} для пользователя {user_id} "
+        f"(уровень: {loyalty_level}, скидка: {discount_percent}%, использование #{return_promo_count + 1})"
+    )
+    return promo_code
+
+
+async def get_users_for_7day_return_promo(
+    db: AsyncSession,
+    days_after_expiration: int = 7
+) -> List[Tuple[User, Subscription]]:
+    """
+    Получает пользователей, у которых подписка истекла {days_after_expiration} дней назад
+    и для которых еще не отправлялось уведомление с промокодом возврата
+    
+    Args:
+        db: Сессия БД
+        days_after_expiration: Количество дней после истечения подписки (по умолчанию 7)
+    
+    Returns:
+        Список кортежей (user, subscription) для пользователей, которым нужно отправить уведомление
+    """
+    from sqlalchemy import func
+    now = datetime.now()
+    expiration_date = now - timedelta(days=days_after_expiration)
+    
+    # Получаем последние истекшие подписки для каждого пользователя
+    subquery = (
+        select(
+            Subscription.user_id,
+            func.max(Subscription.end_date).label('max_end_date')
+        )
+        .group_by(Subscription.user_id)
+        .having(
+            and_(
+                func.max(Subscription.end_date) <= datetime(2099, 1, 1),  # Не берем безлимитные
+                func.max(Subscription.end_date) <= expiration_date,  # Истекли минимум N дней назад
+                func.max(Subscription.end_date) >= expiration_date - timedelta(days=1)  # Но не больше N+1 дней
+            )
+        )
+    ).subquery()
+    
+    # Получаем полные данные подписок
+    query = (
+        select(User, Subscription)
+        .join(Subscription, User.id == Subscription.user_id)
+        .join(
+            subquery,
+            and_(
+                Subscription.user_id == subquery.c.user_id,
+                Subscription.end_date == subquery.c.max_end_date
+            )
+        )
+        .where(
+            and_(
+                Subscription.is_active == False,
+                User.is_blocked == False,  # Не заблокировали бота
+                User.is_recurring_active == False  # Без автопродления
+            )
+        )
+    )
+    
+    result = await db.execute(query)
+    users_with_subs = result.all()
+    
+    # Фильтруем с учетом защиты от злоупотреблений
+    from utils.constants import MAX_RETURN_PROMOS, MIN_DAYS_BETWEEN_RETURN_PROMOS
+    
+    filtered = []
+    for user, subscription in users_with_subs:
+        # Проверка 1: Уже отправлялось уведомление для этой подписки?
+        notification = await get_subscription_notification(db, subscription.id, 'expired_reminder_7days')
+        if notification:
+            logger.debug(f"Пропускаем user_id={user.id}: уведомление уже отправлялось для subscription_id={subscription.id}")
+            continue
+        
+        # Проверка 2: Не превышен ли лимит промокодов? (максимум 3)
+        if user.return_promo_count >= MAX_RETURN_PROMOS:
+            logger.info(
+                f"Пропускаем user_id={user.id}: достигнут лимит промокодов возврата "
+                f"({user.return_promo_count}/{MAX_RETURN_PROMOS})"
+            )
+            continue
+        
+        # Проверка 3: Прошло ли достаточно времени с последнего промокода? (минимум 90 дней)
+        if user.last_return_promo_date:
+            days_since_last = (now - user.last_return_promo_date).days
+            if days_since_last < MIN_DAYS_BETWEEN_RETURN_PROMOS:
+                logger.info(
+                    f"Пропускаем user_id={user.id}: слишком рано для нового промокода "
+                    f"(прошло {days_since_last} дней, нужно {MIN_DAYS_BETWEEN_RETURN_PROMOS})"
+                )
+                continue
+        
+        # Все проверки пройдены - добавляем в список
+        filtered.append((user, subscription))
+        logger.debug(
+            f"User_id={user.id} прошел все проверки: "
+            f"промокодов={user.return_promo_count}/{MAX_RETURN_PROMOS}, "
+            f"последний={user.last_return_promo_date}"
+        )
+    
+    logger.info(
+        f"Отфильтровано {len(filtered)} из {len(users_with_subs)} пользователей "
+        f"для отправки промокодов возврата"
+    )
+    
+    return filtered
+
+
+async def apply_promo_code_percent(
+    db: AsyncSession,
+    user_id: int,
+    promo_code_id: int
+) -> bool:
+    """
+    Применяет процентный промокод, устанавливая разовую скидку пользователю
+    
+    Args:
+        db: Сессия БД
+        user_id: ID пользователя
+        promo_code_id: ID промокода
+    
+    Returns:
+        bool: True если успешно применен, False в случае ошибки
+    """
+    try:
+        # Получаем промокод
+        promo_code = await db.get(PromoCode, promo_code_id)
+        if not promo_code:
+            logger.error(f"Промокод ID {promo_code_id} не найден")
+            return False
+        
+        # Проверяем, что промокод процентный
+        if promo_code.discount_type != 'percent':
+            logger.error(f"Промокод ID {promo_code_id} не является процентным (тип: {promo_code.discount_type})")
+            return False
+        
+        # Проверяем, что промокод персональный и для этого пользователя
+        if promo_code.is_personal and promo_code.user_id != user_id:
+            logger.error(f"Промокод ID {promo_code_id} предназначен для другого пользователя")
+            return False
+        
+        # Проверяем, не использован ли уже
+        already_used = await has_user_used_promo_code(db, user_id, promo_code_id)
+        if already_used:
+            logger.warning(f"Пользователь {user_id} уже использовал промокод {promo_code_id}")
+            return False
+        
+        # Проверяем срок действия
+        if promo_code.expiry_date and promo_code.expiry_date < datetime.now():
+            logger.warning(f"Промокод {promo_code_id} истек")
+            return False
+        
+        # Проверяем активность
+        if not promo_code.is_active:
+            logger.warning(f"Промокод {promo_code_id} неактивен")
+            return False
+        
+        # Получаем пользователя
+        user = await get_user_by_id(db, user_id)
+        if not user:
+            logger.error(f"Пользователь ID {user_id} не найден")
+            return False
+        
+        # Устанавливаем разовую скидку
+        user.one_time_discount_percent = promo_code.value
+        user.updated_at = datetime.now()
+        db.add(user)
+        
+        # Отмечаем использование промокода
+        await use_promo_code(db, user_id, promo_code_id)
+        
+        await db.commit()
+        
+        logger.info(f"Применен процентный промокод {promo_code.code} для пользователя {user_id}. Установлена скидка: {promo_code.value}%")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Ошибка при применении процентного промокода {promo_code_id} для пользователя {user_id}: {e}", exc_info=True)
+        await db.rollback()
+        return False
 
 async def get_users_for_milestone_notifications(db: AsyncSession):
     """
@@ -2028,6 +2313,13 @@ async def send_badge_notification(bot, user: User, badge_type: str, from_admin: 
             "Это достижение особенное, если понимаешь, смекаешь\\? 😎💕\n\n"
             "Ты знаешь, что это значит\\. Ты особенная\\! 🔥"
         ),
+        'moscow_first_meetup': (
+            "🎉 *Красотка, это исторический момент\\!*\n\n"
+            "Ты получила достижение *«Первая встреча в Москве»*\\!\n\n"
+            "Сегодня мы встретились в реальном мире — и это было невероятно\\! Ты стала частью первой офлайн\\-встречи Mom\\'s Club, и мы бесконечно благодарны, что ты была с нами 💖\n\n"
+            "Эти моменты живого общения, тепла и поддержки — именно то, что делает наше сообщество особенным\\. Ты — часть истории Mom\\'s Club\\! ✨\n\n"
+            "Спасибо, что пришла\\. Мы любим тебя\\! 🫂💕"
+        ),
     }
     
     message_text = badge_messages.get(badge_type)
@@ -2076,6 +2368,7 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
         Список типов выданных badges
     """
     granted_badges = []
+    user_id = user.id  # Сохраняем ID заранее для логирования
     
     try:
         # 1. Badge "Первая оплата"
@@ -2104,7 +2397,14 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
                 if badge:
                     granted_badges.append('referral_5')
         
-        # 4. Badge "Месяц в клубе" (30 дней стажа)
+        # 4. Badge "Пригласила 10 друзей"
+        if total_referrals >= 10:
+            if not await has_user_badge(db, user.id, 'referral_10'):
+                badge = await grant_user_badge(db, user.id, 'referral_10')
+                if badge:
+                    granted_badges.append('referral_10')
+        
+        # 5. Badge "Месяц в клубе" (30 дней стажа)
         from loyalty.levels import calc_tenure_days
         tenure_days = await calc_tenure_days(db, user)
         if tenure_days >= 30 and not await has_user_badge(db, user.id, 'month_in_club'):
@@ -2112,24 +2412,17 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
             if badge:
                 granted_badges.append('month_in_club')
         
-        # 5. Badge "Полгода в клубе" (180 дней стажа)
+        # 6. Badge "Полгода в клубе" (180 дней стажа)
         if tenure_days >= 180 and not await has_user_badge(db, user.id, 'half_year_in_club'):
             badge = await grant_user_badge(db, user.id, 'half_year_in_club')
             if badge:
                 granted_badges.append('half_year_in_club')
         
-        # 6. Badge "Год в клубе" (365 дней стажа)
+        # 7. Badge "Год в клубе" (365 дней стажа)
         if tenure_days >= 365 and not await has_user_badge(db, user.id, 'year_in_club'):
             badge = await grant_user_badge(db, user.id, 'year_in_club')
             if badge:
                 granted_badges.append('year_in_club')
-        
-        # 7. Badge "Пригласила 10 друзей"
-        if total_referrals >= 10:
-            if not await has_user_badge(db, user.id, 'referral_10'):
-                badge = await grant_user_badge(db, user.id, 'referral_10')
-                if badge:
-                    granted_badges.append('referral_10')
         
         # 8. Badge "Верный клиент" (5+ успешных платежей)
         from database.models import PaymentLog
@@ -2155,16 +2448,10 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
                 granted_badges.append('platinum_customer')
         
         # 10. Badge "Активный участник" (подписка продлевалась 3+ раза)
-        subscriptions_query = select(func.count(Subscription.id)).where(
-            and_(
-                Subscription.user_id == user.id,
-                Subscription.is_active == False  # Завершенные подписки
-            )
-        )
-        subs_result = await db.execute(subscriptions_query)
-        completed_subs = subs_result.scalar() or 0
-        
-        if completed_subs >= 3 and not await has_user_badge(db, user.id, 'active_member'):
+        # Считаем по успешным платежам, так как при продлении через extend_subscription
+        # новая запись подписки не создается, а обновляется существующая
+        # Используем уже подсчитанный total_payments из проверки выше
+        if total_payments >= 3 and not await has_user_badge(db, user.id, 'active_member'):
             badge = await grant_user_badge(db, user.id, 'active_member')
             if badge:
                 granted_badges.append('active_member')
@@ -2176,7 +2463,7 @@ async def check_and_grant_badges(db: AsyncSession, user: User) -> List[str]:
                 granted_badges.append('birthday_gift')
     
     except Exception as e:
-        logger.error(f"Ошибка при проверке badges для пользователя {user.id}: {e}")
+        logger.error(f"Ошибка при проверке badges для пользователя {user_id}: {e}", exc_info=True)
     
     return granted_badges
 
@@ -2711,12 +2998,14 @@ async def mark_migration_notification_sent(db: AsyncSession, user_id: int, notif
             return False
         
         # Обновляем статус
+        # Сохраняем ID до commit
+        notification_id = notification.id
         notification.is_sent = True
         notification.sent_at = datetime.now()
         
         await db.commit()
         
-        logger.info(f"Уведомление о миграции ID {notification.id} помечено как отправленное")
+        logger.info(f"Уведомление о миграции ID {notification_id} помечено как отправленное")
         return True
         
     except Exception as e:
@@ -2727,16 +3016,17 @@ async def mark_migration_notification_sent(db: AsyncSession, user_id: int, notif
 
 # Функции для работы с заявками на отмену автопродления
 
-async def create_autorenewal_cancellation_request(db: AsyncSession, user_id: int) -> AutorenewalCancellationRequest:
+async def create_autorenewal_cancellation_request(db: AsyncSession, user_id: int, reason: str = None) -> AutorenewalCancellationRequest:
     """Создает заявку на отмену автопродления"""
     request = AutorenewalCancellationRequest(
         user_id=user_id,
-        status='pending'
+        status='pending',
+        reason=reason
     )
     db.add(request)
     await db.commit()
     await db.refresh(request)
-    logger.info(f"Создана заявка на отмену автопродления ID {request.id} для пользователя {user_id}")
+    logger.info(f"Создана заявка на отмену автопродления ID {request.id} для пользователя {user_id} с причиной: {reason}")
     return request
 
 async def get_pending_cancellation_requests(db: AsyncSession) -> List[AutorenewalCancellationRequest]:
@@ -2828,8 +3118,8 @@ async def mark_cancellation_request_contacted(db: AsyncSession, request_id: int)
     logger.info(f"Заявка {request_id} отмечена как 'связались с пользователем'")
     return True
 
-async def send_cancellation_request_notifications(bot, user, request_id: int):
-    """Отправляет уведомления админам и службе заботы о новой заявке на отмену автопродления"""
+async def send_cancellation_request_notifications(bot, user, request_id: int, reason: str = None):
+    """Отправляет уведомления админам о новой заявке на отмену автопродления"""
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     from database.config import AsyncSessionLocal
     
@@ -2846,13 +3136,14 @@ async def send_cancellation_request_notifications(bot, user, request_id: int):
                 end_date = active_sub.end_date.strftime('%d.%m.%Y')
                 subscription_info = f"\n📅 Подписка до: {end_date}"
             
+            reason_info = f"\n📝 Причина: {reason}" if reason else ""
+            
             # Уведомление админам
             admin_notification = (
                 f"🚫 <b>Заявка на отмену автопродления</b>\n\n"
                 f"👤 Пользователь: {user_info}\n"
                 f"🆔 Telegram ID: <code>{user.telegram_id}</code>\n"
-                f"📱 Телефон: {user.phone or 'не указан'}\n"
-                f"📧 Email: {user.email or 'не указан'}{subscription_info}\n"
+                f"📱 Телефон: {user.phone or 'не указан'}{subscription_info}{reason_info}\n"
                 f"🆔 ID заявки: <code>{request_id}</code>\n\n"
                 f"⏳ Требуется обработать заявку"
             )
@@ -2863,7 +3154,7 @@ async def send_cancellation_request_notifications(bot, user, request_id: int):
                 [InlineKeyboardButton(text="📋 Список заявок", callback_data="admin_pending_cancellations")]
             ])
             
-            # Отправляем админам
+            # Отправляем только админам
             for admin_id in ADMIN_IDS:
                 try:
                     await bot.send_message(
@@ -2872,35 +3163,11 @@ async def send_cancellation_request_notifications(bot, user, request_id: int):
                         parse_mode="HTML",
                         reply_markup=keyboard
                     )
+                    logger.info(f"Уведомление о заявке {request_id} отправлено админу {admin_id}")
                 except Exception as e:
                     logger.error(f"Ошибка при отправке уведомления админу {admin_id}: {e}")
             
-            # Уведомление службе заботы (@momsclubsupport)
-            support_username = "momsclubsupport"
-            support_user = await get_user_by_username(session, support_username)
-            
-            if support_user:
-                support_message = (
-                    f"🛟 <b>Новая заявка на отмену автопродления</b>\n\n"
-                    f"👤 Пользователь: {user_info}\n"
-                    f"🆔 Telegram ID: <code>{user.telegram_id}</code>\n"
-                    f"📱 Телефон: {user.phone or 'не указан'}\n"
-                    f"📧 Email: {user.email or 'не указан'}{subscription_info}\n\n"
-                    f"💬 <b>Пожалуйста, свяжитесь с пользователем, узнайте причину отмены и попробуйте отработать возражения.</b>\n\n"
-                    f"После контакта используйте команду:\n"
-                    f"<code>/contacted_cancel {request_id}</code>"
-                )
-                
-                try:
-                    await bot.send_message(
-                        support_user.telegram_id,
-                        support_message,
-                        parse_mode="HTML"
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка при отправке уведомления службе заботы: {e}")
-            else:
-                logger.warning(f"Служба заботы (@{support_username}) не найдена в базе!")
+            # Уведомление службе заботы УБРАНО (админ рассматривает все заявки)
                 
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений о заявке: {e}", exc_info=True)
@@ -3458,3 +3725,123 @@ async def export_analytics_data(db: AsyncSession, format: str = 'text') -> str:
             lines.append(f"  {date_obj.strftime('%d.%m.%Y')}: {count}")
         
         return "\n".join(lines)
+
+
+# --- Функции для работы с активностью в группе ---
+
+async def get_group_activity(db: AsyncSession, user_id: int) -> Optional[GroupActivity]:
+    """Получает активность пользователя в группе"""
+    query = select(GroupActivity).where(GroupActivity.user_id == user_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def update_group_activity(db: AsyncSession, user_id: int) -> GroupActivity:
+    """Обновляет активность пользователя в группе (увеличивает счетчик сообщений и обновляет дату последней активности)"""
+    activity = await get_group_activity(db, user_id)
+    now = datetime.now()
+    
+    if activity:
+        # Обновляем существующую запись
+        activity.message_count += 1
+        activity.last_activity = now
+        activity.updated_at = now
+    else:
+        # Создаем новую запись
+        activity = GroupActivity(
+            user_id=user_id,
+            message_count=1,
+            last_activity=now,
+            created_at=now,
+            updated_at=now
+        )
+        db.add(activity)
+    
+    await db.commit()
+    await db.refresh(activity)
+    logger.debug(f"Обновлена активность пользователя {user_id}: сообщений={activity.message_count}, последняя активность={activity.last_activity}")
+    return activity
+
+
+async def get_top_active_users(db: AsyncSession, limit: int = 20, page: int = 0) -> Tuple[List[Tuple[User, GroupActivity]], int]:
+    """
+    Получает топ активных пользователей в группе (по количеству сообщений)
+    
+    Returns:
+        Tuple[List[Tuple[User, GroupActivity]], int]: Список кортежей (пользователь, активность) и общее количество
+    """
+    offset = page * limit
+    
+    # Запрос с JOIN для получения пользователей с активностью, отсортированных по количеству сообщений
+    query = (
+        select(User, GroupActivity)
+        .join(GroupActivity, User.id == GroupActivity.user_id)
+        .order_by(desc(GroupActivity.message_count), desc(GroupActivity.last_activity))
+        .offset(offset)
+        .limit(limit)
+    )
+    
+    result = await db.execute(query)
+    users_with_activity = result.all()
+    
+    # Получаем общее количество пользователей с активностью
+    count_query = select(func.count(GroupActivity.id))
+    total_count = await db.scalar(count_query)
+    
+    return [(user, activity) for user, activity in users_with_activity], total_count or 0
+
+
+async def get_inactive_users(db: AsyncSession, days: int = 30, limit: int = 20, page: int = 0) -> Tuple[List[Tuple[User, Optional[GroupActivity]]], int]:
+    """
+    Получает список неактивных пользователей (не писали в группе N дней)
+    
+    Args:
+        days: Количество дней без активности
+        limit: Количество пользователей на страницу
+        page: Номер страницы
+    
+    Returns:
+        Tuple[List[Tuple[User, Optional[GroupActivity]]], int]: Список кортежей (пользователь, активность) и общее количество
+    """
+    offset = page * limit
+    cutoff_date = datetime.now() - timedelta(days=days)
+    
+    # Запрос для пользователей, которые либо не имеют активности, либо последняя активность была более N дней назад
+    query = (
+        select(User, GroupActivity)
+        .outerjoin(GroupActivity, User.id == GroupActivity.user_id)
+        .where(
+            or_(
+                GroupActivity.last_activity.is_(None),
+                GroupActivity.last_activity < cutoff_date
+            )
+        )
+        .order_by(
+            case(
+                (GroupActivity.last_activity.is_(None), 0),
+                else_=1
+            ),
+            GroupActivity.last_activity.asc()
+        )
+        .offset(offset)
+        .limit(limit)
+    )
+    
+    result = await db.execute(query)
+    users_with_activity = result.all()
+    
+    # Получаем общее количество
+    count_query = (
+        select(func.count(User.id))
+        .outerjoin(GroupActivity, User.id == GroupActivity.user_id)
+        .where(
+            or_(
+                GroupActivity.last_activity.is_(None),
+                GroupActivity.last_activity < cutoff_date
+            )
+        )
+    )
+    total_count = await db.scalar(count_query) or 0
+    
+    return [(user, activity) for user, activity in users_with_activity], total_count
+

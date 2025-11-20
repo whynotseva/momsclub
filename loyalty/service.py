@@ -75,6 +75,7 @@ async def send_choose_benefit_push(
     Returns:
         True если успешно отправлено, False в противном случае
     """
+    user_id = user.id  # Сохраняем ID заранее для логирования
     try:
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         from aiogram import Bot
@@ -152,7 +153,7 @@ async def send_choose_benefit_push(
         return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка при отправке сообщения выбора бонуса для user_id={user.id}: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при отправке сообщения выбора бонуса для user_id={user_id}: {e}", exc_info=True)
         return False
 
 
@@ -166,9 +167,10 @@ async def apply_benefit_from_callback(
     Применяет бонус из callback-кнопки.
     Проверяет идемпотентность, применяет бонус, обновляет флаг pending_loyalty_reward.
     
+    ИСПРАВЛЕНО: Добавлена защита от race condition и проверка идемпотентности.
+    
     Args:
         db: Сессия БД
-        bot: Объект бота
         user: Объект пользователя
         level: Уровень лояльности
         code: Код бонуса
@@ -176,32 +178,44 @@ async def apply_benefit_from_callback(
     Returns:
         True если успешно применено, False в противном случае
     """
+    user_id = user.id  # Сохраняем ID заранее для логирования
     try:
-        from aiogram import Bot
+        # КРИТИЧНО: Блокируем строку пользователя для предотвращения дублирования
+        lock_query = select(User).where(User.id == user.id).with_for_update()
+        result = await db.execute(lock_query)
+        locked_user = result.scalar_one()
         
-        # Проверяем идемпотентность (проверка уже в обработчике)
+        # Проверяем идемпотентность: не применялся ли уже бонус для этого уровня
+        benefit_check_query = select(LoyaltyEvent.id).where(
+            LoyaltyEvent.user_id == locked_user.id,
+            LoyaltyEvent.kind == 'benefit_chosen',
+            LoyaltyEvent.level == level
+        )
+        benefit_check_result = await db.execute(benefit_check_query)
+        
+        if benefit_check_result.scalar_one_or_none():
+            logger.warning(f"⚠️ Бонус для уровня {level} уже применён для user_id={locked_user.id}")
+            return False
         
         # Применяем бонус (внутри apply_benefit уже есть проверка на активную подписку)
-        success = await apply_benefit(db, user, level, code)
+        success = await apply_benefit(db, locked_user, level, code)
         
         if success:
             # Сбрасываем флаг ожидания награды
-            await db.execute(
-                update(User)
-                .where(User.id == user.id)
-                .values(pending_loyalty_reward=False)
-            )
-            await db.commit()
-            await db.refresh(user)
+            locked_user.pending_loyalty_reward = False
             
-            logger.info(f"✅ Бонус {code} успешно применён для user_id={user.id}")
+            # Коммитим все изменения атомарно
+            await db.commit()
+            
+            logger.info(f"✅ Бонус {code} успешно применён для user_id={locked_user.id}")
             return True
         else:
-            logger.error(f"❌ Не удалось применить бонус {code} для user_id={user.id}")
+            logger.error(f"❌ Не удалось применить бонус {code} для user_id={locked_user.id}")
+            await db.rollback()
             return False
             
     except Exception as e:
-        logger.error(f"❌ Ошибка при применении бонуса из callback для user_id={user.id}: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при применении бонуса из callback для user_id={user_id}: {e}", exc_info=True)
         await db.rollback()
         return False
 

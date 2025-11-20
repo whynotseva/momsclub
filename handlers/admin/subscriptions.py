@@ -13,6 +13,10 @@ from database.crud import get_sorted_active_subscriptions
 
 logger = logging.getLogger(__name__)
 
+# Импортируем из общих констант и helpers
+from utils.constants import LIFETIME_THRESHOLD, LIFETIME_SUBSCRIPTION_GROUP
+from utils.helpers import is_lifetime_subscription
+
 subscriptions_router = Router()
 
 SUBSCRIPTIONS_PAGE_SIZE = 10
@@ -64,7 +68,6 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     else:
         lines = ["<b>📅 Активные подписки</b>", ""]
         for i, (user, subscription) in enumerate(current_items, 1):
-            days_left = (subscription.end_date - now).days
             user_name = user.first_name or ""
             if user.last_name:
                 user_name += f" {user.last_name}"
@@ -72,11 +75,17 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
                 user_name += f" (@{user.username})"
             if not user_name.strip():
                 user_name = f"ID: {user.telegram_id}"
-            expiring_soon = "🔴 " if days_left <= 7 else "🟢 "
-            date_formatted = subscription.end_date.strftime("%d.%m.%Y")
-            lines.append(f"{expiring_soon}{start_idx + i}. <b>{user_name}</b>")
-            lines.append(html_kv("📅 Дата окончания", date_formatted))
-            lines.append(html_kv("⏱ Осталось дней", str(days_left)) + "\n")
+            
+            if is_lifetime_subscription(subscription):
+                lines.append(f"∞ {start_idx + i}. <b>{user_name}</b>")
+                lines.append(html_kv("📅 Статус", "∞ Пожизненная подписка") + "\n")
+            else:
+                days_left = (subscription.end_date - now).days
+                expiring_soon = "🔴 " if days_left <= 7 else "🟢 "
+                date_formatted = subscription.end_date.strftime("%d.%m.%Y")
+                lines.append(f"{expiring_soon}{start_idx + i}. <b>{user_name}</b>")
+                lines.append(html_kv("📅 Дата окончания", date_formatted))
+                lines.append(html_kv("⏱ Осталось дней", str(days_left)) + "\n")
         message_text = "\n".join(lines)
 
     inline_kb = []

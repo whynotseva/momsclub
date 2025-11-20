@@ -22,6 +22,7 @@ from database.crud import (
     get_retention_rate_by_month,
     get_top_referral_sources,
     export_analytics_data,
+    get_user_by_telegram_id,
 )
 from datetime import datetime, timedelta
 
@@ -55,8 +56,8 @@ async def cmd_admin_check(message: types.Message):
             keyboard_buttons.append([InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")])
             keyboard_buttons.append([InlineKeyboardButton(text="📈 Расширенная аналитика", callback_data="admin_analytics")])
         
-        # Поиск пользователя - доступен всем админам
-        keyboard_buttons.append([InlineKeyboardButton(text="👤 Поиск пользователя", callback_data="admin_find_user")])
+        # Пользователи - доступен всем админам
+        keyboard_buttons.append([InlineKeyboardButton(text="👤 Пользователи", callback_data="admin_users_menu")])
         
         # Реферальные связи - доступны всем админам
         keyboard_buttons.append([InlineKeyboardButton(text="🤝 Реферальные связи", callback_data="admin_referral_info")])
@@ -430,7 +431,7 @@ def _admin_menu_keyboard(user=None):
         keyboard_buttons.append([InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")])
         keyboard_buttons.append([InlineKeyboardButton(text="📈 Расширенная аналитика", callback_data="admin_analytics")])
     
-    keyboard_buttons.append([InlineKeyboardButton(text="👤 Поиск пользователя", callback_data="admin_find_user")])
+    keyboard_buttons.append([InlineKeyboardButton(text="👤 Пользователи", callback_data="admin_users_menu")])
     keyboard_buttons.append([InlineKeyboardButton(text="🤝 Реферальные связи", callback_data="admin_referral_info")])
     
     if user and can_manage_admins(user):

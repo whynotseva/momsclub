@@ -2,7 +2,11 @@ from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 import os
-from utils.helpers import log_message, escape_markdown_v2, get_payment_method_markup, get_payment_notice, safe_edit_message, format_user_error_message
+from utils.helpers import (
+    log_message, escape_markdown_v2, get_payment_method_markup, get_payment_notice, 
+    safe_edit_message, format_user_error_message, 
+    format_subscription_end_date, format_subscription_days_left, is_lifetime_subscription
+)
 from database.config import AsyncSessionLocal
 from database.crud import (
     get_or_create_user, 
@@ -57,7 +61,8 @@ from loyalty.levels import get_loyalty_progress
 from utils.constants import (
     CLUB_CHANNEL_URL, 
     SUBSCRIPTION_PRICE_FIRST,
-    SUBSCRIPTION_PRICE, 
+    SUBSCRIPTION_PRICE,
+    BADGE_NAMES_AND_DESCRIPTIONS, 
     SUBSCRIPTION_DAYS, 
     SUBSCRIPTION_PRICE_2MONTHS,
     SUBSCRIPTION_DAYS_2MONTHS,
@@ -92,14 +97,13 @@ class BirthdayStates(StatesGroup):
 class PhoneStates(StatesGroup):
     waiting_for_phone = State()
 
-# --- Состояния FSM для email ---
-class EmailStates(StatesGroup):
-    waiting_for_email = State()
-
 # --- Состояния FSM для данных при оплате ---
 class PaymentDataStates(StatesGroup):
     waiting_for_phone = State()
-    waiting_for_email = State()
+
+# --- Состояния FSM для отмены автопродления ---
+class CancelRenewalStates(StatesGroup):
+    waiting_for_custom_reason = State()
 
 # --- Конец состояний FSM ---
 
@@ -114,7 +118,7 @@ user_router = Router()
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🎀 Личный кабинет"), KeyboardButton(text="✨ Отзывы")],
-        [KeyboardButton(text="💕Написать мне")]
+        [KeyboardButton(text="❓ Частые вопросы"), KeyboardButton(text="🤎 Служба поддержки")]
     ],
     resize_keyboard=True,
     one_time_keyboard=False
@@ -225,27 +229,26 @@ async def cmd_start(message: types.Message, state: FSMContext):
             ]
         )
         
-        # Отправляем приветственное изображение без подписи (текст отправим отдельно)
+        # Отправляем приветственное изображение с текстом как подпись и кнопкой одним сообщением
         if os.path.exists(WELCOME_IMAGE_PATH):
             photo = FSInputFile(WELCOME_IMAGE_PATH)
             await message.answer_photo(
-                photo=photo
+                photo=photo,
+                caption=WELCOME_TEXT,
+                reply_markup=keyboard,
+                parse_mode="HTML"
             )
         else:
-            # Если изображение не найдено, логируем ошибку
+            # Если изображение не найдено, логируем ошибку и отправляем только текст с кнопкой
             logger.error(f"Приветственное изображение не найдено по пути: {WELCOME_IMAGE_PATH}.")
             # Создаем директорию, если она отсутствует
             os.makedirs(os.path.dirname(WELCOME_IMAGE_PATH), exist_ok=True)
-        
-        # Ждем немного перед отправкой текста
-        await asyncio.sleep(0.3)
-        
-        # Отправляем приветственный текст отдельным сообщением с кнопкой
-        await message.answer(
-            WELCOME_TEXT,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+            # Отправляем приветственный текст с кнопкой
+            await message.answer(
+                WELCOME_TEXT,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
         
         # Ждем 0.5 секунды перед отправкой второго сообщения
         await asyncio.sleep(0.5)
@@ -374,26 +377,84 @@ async def process_subscribe(callback: types.CallbackQuery):
                 # Проверяем наличие активной подписки
                 subscription = await get_active_subscription(session, user.id)
                 if subscription:
-                    # Если есть активная подписка, отправляем новое сообщение вместо редактирования
+                    # НОВАЯ ЛОГИКА: Показываем возможность досрочного продления
+                    from utils.early_renewal import (
+                        check_early_renewal_eligibility,
+                        format_subscription_status_message,
+                        format_renewal_options_message
+                    )
+                    from datetime import datetime
+                    
+                    # Проверяем возможность досрочного продления
+                    can_renew, reason, info = await check_early_renewal_eligibility(session, user.id)
+                    
+                    if can_renew and info:
+                        # Показываем статус подписки и варианты продления
+                        status_msg = format_subscription_status_message(
+                            info['days_left'],
+                            info['end_date'],
+                            info['has_autopay']
+                        )
+                        
+                        renewal_msg = format_renewal_options_message(
+                            info['end_date'],
+                            info['days_left'],
+                            info['bonus_eligible'],
+                            info['has_autopay']
+                        )
+                        
+                        full_message = f"{status_msg}\n\n{renewal_msg}"
+                        
+                        # Определяем, откуда вызван
+                        from_broadcast = callback.data == "subscribe:from_broadcast"
+                        back_button = InlineKeyboardButton(
+                            text="🔙 Назад к рассылке" if from_broadcast else "« Назад",
+                            callback_data="show_broadcast_loyalty" if from_broadcast else "back_to_profile"
+                        )
+                        
+                        # Кнопки с тарифами
+                        keyboard = InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [InlineKeyboardButton(text=f"📦 1 месяц — {SUBSCRIPTION_PRICE}₽", callback_data="payment_1month")],
+                                [InlineKeyboardButton(text=f"📦 2 месяца — {SUBSCRIPTION_PRICE_2MONTHS}₽ 💰", callback_data="payment_2months")],
+                                [InlineKeyboardButton(text=f"📦 3 месяца — {SUBSCRIPTION_PRICE_3MONTHS}₽ 💰", callback_data="payment_3months")],
+                                [InlineKeyboardButton(text="🔐 Войти в канал", url=CLUB_CHANNEL_URL)],
+                                [back_button]
+                            ]
+                        )
+                        
+                        try:
+                            await callback.message.edit_text(
+                                full_message,
+                                reply_markup=keyboard,
+                                parse_mode="HTML"
+                            )
+                        except:
+                            await callback.message.answer(
+                                full_message,
+                                reply_markup=keyboard,
+                                parse_mode="HTML"
+                            )
+                        
+                        await callback.answer()
+                        return
+                    
+                    # Старая логика (если не можем продлить)
                     await callback.answer("У вас уже есть доступ к каналу", show_alert=True)
                     
-                    # Определяем, откуда вызван (из рассылки или из профиля)
                     from_broadcast = callback.data == "subscribe:from_broadcast"
-                    
-                    # Создаем клавиатуру для перехода в канал
                     back_button = InlineKeyboardButton(text="🔙 Назад к рассылке", callback_data="show_broadcast_loyalty") if from_broadcast else InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")
                     keyboard = InlineKeyboardMarkup(
                         inline_keyboard=[
                             [InlineKeyboardButton(text="🔐 Войти в закрытый канал", url=CLUB_CHANNEL_URL)],
-                            [InlineKeyboardButton(text="🔍 Мои подписки", callback_data="my_subscriptions")],
                             [back_button]
                         ]
                     )
                     
-                    # Отправляем новое сообщение вместо редактирования
+                    end_date_formatted = format_subscription_end_date(subscription, escape_for_markdown=False)
                     await callback.message.answer(
                         "🎉 У вас уже есть активная подписка!\n\n" +
-                        f"Подписка действует до: {subscription.end_date.strftime('%d.%m.%Y')}\n\n" +
+                        f"Подписка действует до: {end_date_formatted}\n\n" +
                         f"Нажмите на кнопку ниже, чтобы перейти в закрытый канал Mom's Club.",
                         reply_markup=keyboard,
                         parse_mode="HTML"
@@ -446,8 +507,8 @@ async def process_subscribe(callback: types.CallbackQuery):
         # Стандартный режим - оригинальный код
         # Проверяем, первая ли это оплата для определения текста и цены
         async with AsyncSessionLocal() as session:
-            current_user = await get_user_by_telegram_id(session, callback.from_user.id)
-            is_first_payment = current_user and not current_user.is_first_payment_done
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            is_first_payment = user and not user.is_first_payment_done
         
         # Текст предложения подписки
         if is_first_payment:
@@ -470,7 +531,16 @@ async def process_subscribe(callback: types.CallbackQuery):
 
 <b>Нажми на вариант, чтобы присоединиться!</b>"""
         else:
-            subscription_text = """<b>Выберите подходящий вам тариф доступа в Mom's Club:</b>
+            # Проверяем, есть ли примененная скидка
+            discount_percent = effective_discount(user)
+            has_discount = discount_percent > 0
+            
+            # Формируем текст с информацией о скидке, если она есть
+            discount_info = ""
+            if has_discount:
+                discount_info = f"\n\n💰 <b>Ваша персональная скидка: {discount_percent}% применена!</b>"
+            
+            subscription_text = f"""<b>Выберите подходящий вам тариф доступа в Mom's Club:</b>
 
 <b>Что тебя ждёт:</b>
 • доступ к закрытому каналу
@@ -480,7 +550,7 @@ async def process_subscribe(callback: types.CallbackQuery):
 • тренды и примеры для мамского блога
 • подкасты и разборы
 • поддержка твоего контента
-• комьюнити из потрясающих мам
+• комьюнити из потрясающих мам{discount_info}
 
 <b>Нажми на один из вариантов, чтобы присоединиться прямо сейчас!</b>"""
 
@@ -500,14 +570,31 @@ async def process_subscribe(callback: types.CallbackQuery):
         else:
             # Обычные тарифы
             back_button = InlineKeyboardButton(text="🔙 Назад к рассылке", callback_data="show_broadcast_loyalty") if from_broadcast else InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text=f"1 месяц — {SUBSCRIPTION_PRICE} ₽", callback_data="payment_1month")],
-                    [InlineKeyboardButton(text=f"2 месяца — {SUBSCRIPTION_PRICE_2MONTHS} ₽", callback_data="payment_2months")],
-                    [InlineKeyboardButton(text=f"3 месяца — {SUBSCRIPTION_PRICE_3MONTHS} ₽", callback_data="payment_3months")],
-                    [back_button]
-                ]
-            )
+            
+            # Если есть скидка, показываем цены со скидкой
+            if has_discount:
+                price_1month = price_with_discount(SUBSCRIPTION_PRICE, discount_percent)
+                price_2months = price_with_discount(SUBSCRIPTION_PRICE_2MONTHS, discount_percent)
+                price_3months = price_with_discount(SUBSCRIPTION_PRICE_3MONTHS, discount_percent)
+                
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text=f"1 месяц — ~~{SUBSCRIPTION_PRICE}₽~~ {price_1month}₽ (скидка {discount_percent}%)", callback_data="payment_1month")],
+                        [InlineKeyboardButton(text=f"2 месяца — ~~{SUBSCRIPTION_PRICE_2MONTHS}₽~~ {price_2months}₽ (скидка {discount_percent}%)", callback_data="payment_2months")],
+                        [InlineKeyboardButton(text=f"3 месяца — ~~{SUBSCRIPTION_PRICE_3MONTHS}₽~~ {price_3months}₽ (скидка {discount_percent}%)", callback_data="payment_3months")],
+                        [back_button]
+                    ]
+                )
+            else:
+                # Обычные цены без скидки
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text=f"1 месяц — {SUBSCRIPTION_PRICE} ₽", callback_data="payment_1month")],
+                        [InlineKeyboardButton(text=f"2 месяца — {SUBSCRIPTION_PRICE_2MONTHS} ₽", callback_data="payment_2months")],
+                        [InlineKeyboardButton(text=f"3 месяца — {SUBSCRIPTION_PRICE_3MONTHS} ₽", callback_data="payment_3months")],
+                        [back_button]
+                    ]
+                )
         
         # Локальный баннер для страницы тарифов
         banner_path = os.path.join(os.getcwd(), "media", "аватар.jpg")
@@ -617,7 +704,7 @@ async def process_subscription_payment(callback: types.CallbackQuery, state: FSM
                 await callback.answer("Пользователь не найден в базе данных", show_alert=True)
                 return
 
-            # Создаем платеж БЕЗ запроса телефона и email (по требованию заказчицы)
+            # Создаем платеж БЕЗ запроса телефона
             await create_payment_for_user(callback, state, user, price, days, sub_type)
     
     except Exception as e:
@@ -653,7 +740,6 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                 sub_type=sub_type,
                 days=days,
                 phone=user.phone,
-                email=user.email,
                 discount_percent=discount_percent
             )
             
@@ -773,84 +859,6 @@ async def process_payment_phone_input(message: types.Message, state: FSMContext)
             if user:
                 await update_user(session, user.telegram_id, phone=phone_digits)
                 
-                # Проверяем, нужен ли email
-                user = await get_user_by_telegram_id(session, message.from_user.id)  # Обновляем данные
-                if not user.email:
-                    # Переходим к запросу email
-                    await state.set_state(PaymentDataStates.waiting_for_email)
-                    await message.answer(
-                        "✅ *Телефон сохранен\\!*\n\n"
-                        "📧 *Теперь введите ваш email\\-адрес:*\n\n"
-                        "Например: `example@mail\\.ru`\n\n"
-                        "💡 Email нужен для:\n"
-                        "• Чеков об оплате\n"
-                        "• Уведомлений о продлении\n"
-                        "• Связи в случае проблем",
-                        parse_mode="MarkdownV2"
-                    )
-                else:
-                    # Все данные есть, создаем платеж
-                    data = await state.get_data()
-                    await state.clear()
-                    
-                    # Создаем фальшивый callback для совместимости
-                    fake_callback = types.CallbackQuery(
-                        id="fake",
-                        from_user=message.from_user,
-                        chat_instance="fake",
-                        message=message
-                    )
-                    
-                    await create_payment_for_user(
-                        fake_callback, 
-                        state, 
-                        user, 
-                        data['payment_price'], 
-                        data['payment_days'], 
-                        data['payment_sub_type']
-                    )
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении телефона: {e}")
-        await message.answer("Произошла ошибка. Попробуйте еще раз.")
-    """
-    pass  # Закрывающий комментарий
-
-
-# Обработчик ввода email для оплаты (ОТКЛЮЧЕН по требованию заказчицы)
-@user_router.message(StateFilter(PaymentDataStates.waiting_for_email))
-async def process_payment_email_input(message: types.Message, state: FSMContext):
-    """Обрабатывает ввод email для оплаты (заглушка)"""
-    # Запрос email отключен
-    await message.answer("❌ Запрос email отключен")
-    return
-    
-    
-    # Старый код (закомментирован):
-    """
-    import re
-    
-    email_text = message.text.strip()
-    
-    # Проверяем формат email
-    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    if not re.match(email_pattern, email_text):
-        await message.answer(
-            "❌ *Неверный формат email*\n\n"
-            "Пожалуйста, введите корректный email\\-адрес:\n"
-            "`example@mail\\.ru`",
-            parse_mode="MarkdownV2"
-        )
-        return
-    
-    try:
-        from database.crud import get_user_by_telegram_id, update_user
-        
-        # Сохраняем email в базе данных
-        async with AsyncSessionLocal() as session:
-            user = await get_user_by_telegram_id(session, message.from_user.id)
-            if user:
-                await update_user(session, user.telegram_id, email=email_text)
-                
                 # Все данные есть, создаем платеж
                 data = await state.get_data()
                 await state.clear()
@@ -872,13 +880,13 @@ async def process_payment_email_input(message: types.Message, state: FSMContext)
                     data['payment_sub_type']
                 )
     except Exception as e:
-        logger.error(f"Ошибка при сохранении email: {e}")
+        logger.error(f"Ошибка при сохранении телефона: {e}")
         await message.answer("Произошла ошибка. Попробуйте еще раз.")
     """
     pass  # Закрывающий комментарий
 
 
-# Остальные обработчики...
+# Email полностью удален из системы (не используется)
 
 
 # Заменяем прежний обработчик payment на redirect к одномесячной подписке
@@ -958,8 +966,8 @@ async def process_check_payment(callback: types.CallbackQuery, state: FSMContext
             active_subscription = await get_active_subscription(session, user.id)
             subscription_text = ""
             if active_subscription:
-                end_date_formatted = active_subscription.end_date.strftime("%d.%m.%Y")
-                subscription_text = f"\n\n✅ Ваша текущая подписка активна до *{escape_markdown_v2(end_date_formatted)}* и продолжает действовать\\."
+                end_date_formatted = format_subscription_end_date(active_subscription, escape_for_markdown=True)
+                subscription_text = f"\n\n✅ Ваша текущая подписка активна до *{end_date_formatted}* и продолжает действовать\\."
             
             if payment_status == "success":
                 # Проверяем, не обрабатывали ли уже этот платеж
@@ -1071,8 +1079,8 @@ async def process_check_payment(callback: types.CallbackQuery, state: FSMContext
                     ]
                 )
                 
-                # Форматируем дату окончания подписки для отображения
-                end_date_formatted = subscription.end_date.strftime("%d.%m.%Y")
+                # Форматируем дату окончания подписки для отображения (с учетом пожизненной)
+                end_date_formatted = format_subscription_end_date(subscription, escape_for_markdown=True)
                 
                 try:
                     # Удаляем текущее сообщение
@@ -1216,6 +1224,33 @@ async def process_check_payment(callback: types.CallbackQuery, state: FSMContext
         await callback.answer(error_msg, show_alert=True)
 
 
+# Обработчик команды /profile
+@user_router.message(Command("profile"), F.chat.type == "private")
+async def cmd_profile(message: types.Message):
+    """Обработчик команды /profile - открывает личный кабинет"""
+    log_message(message.from_user.id, "/profile", "command")
+    # Перенаправляем на обработчик кнопки "Личный кабинет"
+    await process_profile(message)
+
+
+# Обработчик команды /faq
+@user_router.message(Command("faq"), F.chat.type == "private")
+async def cmd_faq(message: types.Message):
+    """Обработчик команды /faq - открывает частые вопросы"""
+    log_message(message.from_user.id, "/faq", "command")
+    # Перенаправляем на обработчик кнопки "Частые вопросы"
+    await process_faq(message)
+
+
+# Обработчик команды /support
+@user_router.message(Command("support"), F.chat.type == "private")
+async def cmd_support(message: types.Message):
+    """Обработчик команды /support - открывает службу поддержки"""
+    log_message(message.from_user.id, "/support", "command")
+    # Перенаправляем на обработчик кнопки "Служба поддержки"
+    await process_support(message)
+
+
 # Обработчик команды /help
 @user_router.message(Command("help"), F.chat.type == "private")
 async def cmd_help(message: types.Message):
@@ -1225,6 +1260,8 @@ async def cmd_help(message: types.Message):
     help_text = """Доступные команды:
 /start - Начать работу с ботом
 /profile - Личный кабинет
+/faq - Частые вопросы
+/support - Служба поддержки
 /club - Получить ссылку на закрытый канал
 /help - Показать это сообщение помощи"""
     
@@ -1271,56 +1308,8 @@ async def cmd_club(message: types.Message):
         )
 
 
-# Обработчик кнопки "Мои подписки"
-@user_router.callback_query(F.data == "my_subscriptions")
-async def process_my_subscriptions(callback: types.CallbackQuery):
-    log_message(callback.from_user.id, "view_subscriptions", "action")
-    
-    # Получаем пользователя из базы данных
-    async with AsyncSessionLocal() as session:
-        user = await get_user_by_telegram_id(session, callback.from_user.id)
-        if not user:
-            await callback.answer("Пользователь не найден", show_alert=True)
-            return
-        
-        # Получаем информацию о подписке
-        subscription = await get_active_subscription(session, user.id)
-        
-        if subscription:
-            # Создаем клавиатуру с кнопкой для перехода в канал
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🔐 Войти в закрытый канал", url=CLUB_CHANNEL_URL)],
-                    [InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")]
-                ]
-            )
-            
-            await safe_edit_message(
-                callback,
-                f"🔍 <b>Информация о подписке:</b>\n\n" +
-                f"📆 Дата начала: {subscription.start_date.strftime('%d.%m.%Y')}\n" +
-                f"📆 Действует до: {subscription.end_date.strftime('%d.%m.%Y')}\n\n" +
-                f"Статус: ✅ Активна\n\n" +
-                f"Используйте кнопку ниже для доступа в закрытый канал Mom's Club:",
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
-        else:
-            # Создаем клавиатуру с кнопкой для оформления подписки
-            keyboard = InlineKeyboardButton(text="💸 Оформить подписку", callback_data="subscribe")
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [keyboard]
-                ]
-            )
-            
-            await safe_edit_message(
-                callback,
-                "❌ У вас нет активной подписки. Оформите подписку, чтобы получить доступ к закрытому каналу Mom's Club.",
-                reply_markup=keyboard
-            )
-
-    await callback.answer()
+# УДАЛЕНО: Обработчик "Мои подписки" - функция не используется
+# Все операции с подпиской теперь через "Управление подпиской"
 
 
 # Обработчик кнопки "Назад"
@@ -1364,8 +1353,8 @@ async def process_extend_user_subscription(callback: types.CallbackQuery, state:
             if TEMPORARY_PAYMENT_MODE:
                 # Формируем сообщение в зависимости от наличия подписки
                 if subscription:
-                    # Активная подписка есть - показываем дату окончания
-                    end_date_str = subscription.end_date.strftime("%d.%m.%Y")
+                    # Активная подписка есть - показываем дату окончания (с учетом пожизненной)
+                    end_date_str = format_subscription_end_date(subscription, escape_for_markdown=False)
                     
                     message_text = f"<b>Продление подписки</b>\n\n"
                     message_text += f"У тебя есть активная подписка до <b>{end_date_str}</b>.\n\n"
@@ -1408,18 +1397,14 @@ async def process_extend_user_subscription(callback: types.CallbackQuery, state:
             # Стандартный режим - оригинальный код
             # Если есть активная подписка, сначала показываем экран подтверждения
             if subscription:
-                # Вычисляем оставшиеся дни
-                days_left = (subscription.end_date - datetime.now()).days
-                days_text = f"{days_left} дней"
-                if days_left == 1:
-                    days_text = "1 день"
-                elif days_left == 0:
-                    days_text = "последний день"
+                # Форматируем дату и дни (с учетом пожизненной подписки)
+                end_date_str = format_subscription_end_date(subscription, escape_for_markdown=False)
+                days_text = format_subscription_days_left(subscription, escape_for_markdown=False)
                 
                 # Формируем текст подтверждения
                 confirmation_text = f"""<b>Подтверждение продления подписки</b>
 
-У вас уже есть активная подписка до: <b>{subscription.end_date.strftime('%d.%m.%Y')}</b>
+У вас уже есть активная подписка до: <b>{end_date_str}</b>
 Осталось: <b>{days_text}</b>
 
 Вы уверены, что хотите продлить подписку?
@@ -1552,19 +1537,15 @@ async def process_confirm_extension(callback: types.CallbackQuery, state: FSMCon
             
             # Формируем текст с упоминанием текущей подписки
             if subscription:
-                # Вычисляем оставшиеся дни
-                days_left = (subscription.end_date - datetime.now()).days
-                days_text = f"{days_left} дней"
-                if days_left == 1:
-                    days_text = "1 день"
-                elif days_left == 0:
-                    days_text = "последний день"
+                # Форматируем дату и дни (с учетом пожизненной подписки)
+                end_date_str = format_subscription_end_date(subscription, escape_for_markdown=False)
+                days_text = format_subscription_days_left(subscription, escape_for_markdown=False)
                 
                 # Формируем текст с упоминанием текущей подписки
                 subscription_text = f"""<b>Продление подписки в Mom's Club</b>
 
 🔍 <b>Информация о текущей подписке:</b>
-📆 Действует до: {subscription.end_date.strftime('%d.%m.%Y')}
+📆 Действует до: {end_date_str}
 ⏳ Осталось: {days_text}
 
 <b>Выберите тариф для продления:</b>
@@ -1717,37 +1698,10 @@ async def format_user_badges(db, user) -> str:
     if not badges:
         return ""
     
-    badge_names = {
-        # Автоматические badges
-        'first_payment': ('💳 Первая оплата', 'Твоя первая оплата в Mom\'s Club'),
-        'referral_1': ('🤝 Пригласила друга', 'Ты пригласила первого друга'),
-        'referral_5': ('🌟 Пригласила 5 друзей', 'Ты пригласила 5 друзей'),
-        'referral_10': ('✨ Пригласила 10 друзей', 'Ты пригласила 10 друзей!'),
-        'month_in_club': ('📅 Месяц в клубе', 'Ты с нами уже месяц!'),
-        'half_year_in_club': ('💫 Полгода в клубе', 'Ты с нами уже полгода!'),
-        'year_in_club': ('🏆 Год в клубе', 'Ты с нами уже целый год!'),
-        'loyal_customer': ('💎 Верный клиент', '5+ успешных платежей'),
-        'platinum_customer': ('👑 Платиновый клиент', '10+ успешных платежей'),
-        'active_member': ('🔥 Активный участник', 'Подписка продлевалась 3+ раза'),
-        'birthday_gift': ('🎂 День рождения', 'Получен подарок на ДР'),
-        # Специальные badges (только от админов)
-        'community_helper': ('💝 Помощь сообществу', 'Особый вклад в развитие клуба'),
-        'inspiration': ('✨ Источник вдохновения', 'Ты вдохновляешь других участниц'),
-        'early_supporter': ('🌱 Первопроходец', 'Одна из первых участниц клуба'),
-        'ambassador': ('🌟 Амбассадор клуба', 'Настоящий представитель Mom\'s Club'),
-        'special_thanks': ('💖 Особая благодарность', 'Особая благодарность от команды'),
-        'milestone_celebrator': ('🎉 Празднуем вместе', 'Особые моменты вместе с нами'),
-        'supportive_friend': ('🤗 Поддерживающая подруга', 'Ты всегда поддерживаешь других'),
-        'creative_soul': ('🎨 Творческая душа', 'Твои идеи вдохновляют'),
-        'motivator': ('💪 Мотиватор', 'Ты мотивируешь других к действию'),
-        'heart_of_club': ('💕 Сердце клуба', 'Ты — сердце нашего сообщества'),
-        'creator_special': ('💋 Моя сучка от создателя Moms Club', 'Особое достижение от создателя'),
-    }
-    
     badges_text = "\n\n🏆 *Твои достижения:*\n"
     for badge in badges:
         # Получаем название badge из словаря, если нет - используем badge_type
-        badge_info = badge_names.get(badge.badge_type)
+        badge_info = BADGE_NAMES_AND_DESCRIPTIONS.get(badge.badge_type)
         if badge_info:
             name, desc = badge_info
         else:
@@ -1882,19 +1836,10 @@ async def process_profile(message: types.Message):
             if subscription:
                 # Форматируем даты для красивого отображения с экранированием
                 start_date = escape_markdown_v2(subscription.start_date.strftime("%d.%m.%Y"))
-                end_date = escape_markdown_v2(subscription.end_date.strftime("%d.%m.%Y"))
+                end_date = format_subscription_end_date(subscription, escape_for_markdown=True)
                 
-                # Рассчитываем оставшиеся дни
-                days_left = (subscription.end_date - datetime.now()).days
-                days_text = f"{days_left} дней"
-                if days_left == 1:
-                    days_text = "1 день"
-                elif days_left == 0:
-                    days_text = "последний день"
-                elif days_left < 0:
-                    days_text = "истекла"
-                
-                days_text = escape_markdown_v2(days_text)
+                # Рассчитываем оставшиеся дни (с учетом пожизненной подписки)
+                days_text = format_subscription_days_left(subscription, escape_for_markdown=True)
                 
                 # Формируем информацию о лояльности
                 loyalty_status = await format_loyalty_status_short(session, user)
@@ -1926,11 +1871,6 @@ async def process_profile(message: types.Message):
                         # Подписка и программы (отдельные строки для длинных текстов)
                         [InlineKeyboardButton(text="⚙️ Управление подпиской", callback_data="manage_subscription")],
                         [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="referral_program")],
-                        # Информация
-                        [
-                            InlineKeyboardButton(text="💎 Лояльность", callback_data="loyalty_info"),
-                            InlineKeyboardButton(text="🏆 Достижения", callback_data="badges_info")
-                        ],
                         # Платежи и промокод
                         [
                             InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
@@ -1965,11 +1905,6 @@ async def process_profile(message: types.Message):
                     inline_keyboard=[
                         # Основное действие
                         [InlineKeyboardButton(text="💓 Присоединиться к Mom's Club 💓", callback_data="subscribe")],
-                        # Информация
-                        [
-                            InlineKeyboardButton(text="💎 Лояльность", callback_data="loyalty_info"),
-                            InlineKeyboardButton(text="🏆 Достижения", callback_data="badges_info")
-                        ],
                         # Дополнительно
                         [
                             InlineKeyboardButton(text="🎁 Промокод", callback_data="enter_promo_code"),
@@ -2228,26 +2163,26 @@ async def process_review_info(callback: types.CallbackQuery):
     await callback.answer("Это индикатор текущей позиции в галерее отзывов")
 
 
-# Обработчик кнопки "💕Написать мне"
-@user_router.message(lambda message: message.text == "💕Написать мне")
-async def process_write_to_me(message: types.Message):
+# Обработчик кнопки "🤎 Служба поддержки"
+@user_router.message(lambda message: message.text == "🤎 Служба поддержки")
+async def process_support(message: types.Message):
     """
-    Обработчик кнопки "Написать мне".
-    Отправляет сообщение с информацией и кнопкой для связи с Полиной.
+    Обработчик кнопки "Служба поддержки".
+    Отправляет сообщение с информацией и кнопкой для связи со службой поддержки.
     """
     # Создаем кнопку для перехода в Telegram
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💌 Написать Полине", url="https://t.me/polinadmitrenkoo")],
-            [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_write_me")]
+            [InlineKeyboardButton(text="🤎 Написать в поддержку", url="https://t.me/momsclubsupport")],
+            [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_support")]
         ]
     )
     
     # Текст с форматированием
     text = (
-        "<b>🌸 Если остались вопросы про клуб</b> — напиши мне, я с радостью всё "
-        "объясню и поддержу 🤍\n\n"
-        "<i>Буду рада твоему сообщению в Telegram</i>"
+        "<b>🤎 Служба поддержки Mom's Club</b>\n\n"
+        "👋 Если у тебя есть вопросы или нужна помощь — напиши нам!\n\n"
+        "✨ Мы всегда рады помочь и ответить на все твои вопросы 🤎"
     )
     
     await message.answer(
@@ -2256,14 +2191,14 @@ async def process_write_to_me(message: types.Message):
         parse_mode="HTML"
     )
 
-# Обработчик кнопки закрытия сообщения "Написать мне"
-@user_router.callback_query(lambda c: c.data == "close_write_me")
-async def close_write_me_message(callback: types.CallbackQuery):
-    """Закрывает сообщение с контактами Полины"""
+# Обработчик кнопки закрытия сообщения "Служба поддержки"
+@user_router.callback_query(lambda c: c.data == "close_support")
+async def close_support_message(callback: types.CallbackQuery):
+    """Закрывает сообщение со службой поддержки"""
     try:
         await callback.message.delete()
     except Exception as e:
-        logger.error(f"Ошибка при закрытии сообщения 'Написать мне': {e}")
+        logger.error(f"Ошибка при закрытии сообщения 'Служба поддержки': {e}")
     
     await callback.answer()
 
@@ -2327,19 +2262,10 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
             if subscription:
                 # Форматируем даты для красивого отображения с экранированием
                 start_date = escape_markdown_v2(subscription.start_date.strftime("%d.%m.%Y"))
-                end_date = escape_markdown_v2(subscription.end_date.strftime("%d.%m.%Y"))
+                end_date = format_subscription_end_date(subscription, escape_for_markdown=True)
                 
-                # Рассчитываем оставшиеся дни
-                days_left = (subscription.end_date - datetime.now()).days
-                days_text = f"{days_left} дней"
-                if days_left == 1:
-                    days_text = "1 день"
-                elif days_left == 0:
-                    days_text = "последний день"
-                elif days_left < 0:
-                    days_text = "истекла"
-                
-                days_text = escape_markdown_v2(days_text)
+                # Рассчитываем оставшиеся дни (с учетом пожизненной подписки)
+                days_text = format_subscription_days_left(subscription, escape_for_markdown=True)
                 
                 # Формируем информацию о лояльности
                 loyalty_status = await format_loyalty_status_short(session, user)
@@ -2371,11 +2297,6 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
                         # Подписка и программы (отдельные строки для длинных текстов)
                         [InlineKeyboardButton(text="⚙️ Управление подпиской", callback_data="manage_subscription")],
                         [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="referral_program")],
-                        # Информация
-                        [
-                            InlineKeyboardButton(text="💎 Лояльность", callback_data="loyalty_info"),
-                            InlineKeyboardButton(text="🏆 Достижения", callback_data="badges_info")
-                        ],
                         # Платежи и промокод
                         [
                             InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
@@ -2416,11 +2337,6 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
                     inline_keyboard=[
                         # Основное действие
                         [InlineKeyboardButton(text="💓 Присоединиться к Mom's Club 💓", callback_data="subscribe")],
-                        # Информация
-                        [
-                            InlineKeyboardButton(text="💎 Лояльность", callback_data="loyalty_info"),
-                            InlineKeyboardButton(text="🏆 Достижения", callback_data="badges_info")
-                        ],
                         # Дополнительно
                         [
                             InlineKeyboardButton(text="🎁 Промокод", callback_data="enter_promo_code"),
@@ -2549,6 +2465,7 @@ async def show_broadcast_loyalty(callback: types.CallbackQuery):
 
 
 # Обработчик кнопки "Все про систему лояльности"
+@user_router.callback_query(F.data == "faq_loyalty")
 @user_router.callback_query(F.data == "loyalty_info")
 @user_router.callback_query(F.data == "loyalty_info:from_broadcast")
 async def process_loyalty_info(callback: types.CallbackQuery):
@@ -2631,14 +2548,21 @@ async def process_loyalty_info(callback: types.CallbackQuery):
 • Стаж считается с момента первой оплаты
 • Бонусы доступны только при активной подписке{current_status}{next_level_info}"""
         
-        # Определяем, откуда вызван (из рассылки или из профиля)
+        # Определяем, откуда вызван (из рассылки, FAQ или профиля)
         from_broadcast = callback.data == "loyalty_info:from_broadcast"
+        from_faq = callback.data == "faq_loyalty"
         
         # Создаем кнопки в зависимости от источника
         if from_broadcast:
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="🔙 Назад к рассылке", callback_data="show_broadcast_loyalty")]
+                ]
+            )
+        elif from_faq:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="« Назад к вопросам", callback_data="back_to_faq")]
                 ]
             )
         else:
@@ -2661,10 +2585,13 @@ async def process_loyalty_info(callback: types.CallbackQuery):
         await callback.answer()
 
 
+@user_router.callback_query(F.data == "faq_badges")
 @user_router.callback_query(F.data == "badges_info")
 async def process_badges_info(callback: types.CallbackQuery):
     """Обработчик кнопки 'Все про достижения'"""
     log_message(callback.from_user.id, "view_badges_info", "action")
+    
+    from_faq = callback.data == "faq_badges"
     
     badges_info_text = """🏆 *Все про достижения в Mom's Club\\!*
 
@@ -2719,11 +2646,19 @@ async def process_badges_info(callback: types.CallbackQuery):
 
 Продолжай быть активной, красотка\\! Мы ценим каждую участницу нашего клуба 💕"""
     
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
-        ]
-    )
+    # Кнопка назад в зависимости от источника
+    if from_faq:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад к вопросам", callback_data="back_to_faq")]
+            ]
+        )
+    else:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
+            ]
+        )
     
     try:
         await callback.message.delete()
@@ -3061,12 +2996,12 @@ async def process_promo_code_input(message: types.Message, state: FSMContext):
                 # Отмечаем использование промокода
                 await use_promo_code(session, db_user.id, promo_code.id)
                 
-                # Формируем сообщение об успехе
-                end_date_formatted = subscription.end_date.strftime("%d.%m.%Y")
+                # Формируем сообщение об успехе (с учетом пожизненной подписки)
+                end_date_formatted = format_subscription_end_date(subscription, escape_for_markdown=True)
                 success_text = (
                     f"🎉 Промокод *{escape_markdown_v2(promo_code.code)}* успешно активирован\\!\n\n"
                     f"🎁 Вам добавлено *{bonus_days} дней* подписки\\.\n"
-                    f"Теперь ваша подписка активна до *{escape_markdown_v2(end_date_formatted)}*\\.\n\n"
+                    f"Теперь ваша подписка активна до *{end_date_formatted}*\\.\n\n"
                     f"Добро пожаловать в клуб\\!"
                 )
                 
@@ -3103,6 +3038,38 @@ async def process_promo_code_input(message: types.Message, state: FSMContext):
                     logger.error(f"Ошибка при формировании/отправке уведомления админам о промокоде {promo_code.code}: {notify_err}")
                 # >>> КОНЕЦ БЛОКА УВЕДОМЛЕНИЯ АДМИНОВ <<<
 
+            elif promo_code.discount_type == 'percent':
+                # Применяем процентный промокод
+                from database.crud import apply_promo_code_percent
+                success = await apply_promo_code_percent(session, db_user.id, promo_code.id)
+                
+                if not success:
+                    error_msg = format_user_error_message(Exception("Не удалось применить промокод"), "при применении промокода")
+                    await message.answer(error_msg)
+                    await state.clear()
+                    return
+                
+                # Формируем сообщение об успехе
+                expiry_date_str = promo_code.expiry_date.strftime("%d.%m.%Y") if promo_code.expiry_date else "не ограничен"
+                
+                success_text = (
+                    f"✅ <b>Промокод применен!</b>\n\n"
+                    f"🎁 Ваша скидка: <b>{promo_code.value}%</b>\n"
+                    f"⏰ Действует до: <b>{expiry_date_str}</b>\n\n"
+                    f"Теперь выберите тариф и оплатите со скидкой!"
+                )
+                
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Выбрать тариф со скидкой", callback_data="subscribe")],
+                        [InlineKeyboardButton(text="🎀 Личный кабинет", callback_data="back_to_profile")]
+                    ]
+                )
+                
+                await message.answer(success_text, reply_markup=keyboard, parse_mode="HTML")
+                await state.clear()
+                logger.info(f"Процентный промокод {promo_code_text} успешно применен для пользователя {user_id}")
+
             else:
                 # Если в будущем появятся другие типы скидок
                 await message.answer("❌ Неподдерживаемый тип промокода.")
@@ -3125,6 +3092,77 @@ async def cancel_promo_code_input(callback: types.CallbackQuery, state: FSMConte
     await state.clear()
     await callback.answer("Ввод промокода отменен")
     await process_back_to_profile(callback)
+
+# Обработчик кнопки "Использовать промокод"
+@user_router.callback_query(F.data.startswith("use_return_promo:"))
+async def process_use_return_promo(callback: types.CallbackQuery):
+    """
+    Обработчик кнопки "Использовать промокод"
+    Применяет персональный промокод и показывает сообщение с кнопкой выбора тарифа
+    """
+    log_message(callback.from_user.id, "use_return_promo", "action")
+    
+    try:
+        # Извлекаем ID промокода из callback_data
+        promo_code_id = int(callback.data.split(":")[1])
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            
+            if not user:
+                await callback.answer("Пользователь не найден", show_alert=True)
+                return
+            
+            # Применяем промокод
+            from database.crud import apply_promo_code_percent
+            success = await apply_promo_code_percent(session, user.id, promo_code_id)
+            
+            if not success:
+                await callback.answer("❌ Не удалось применить промокод. Возможно, он уже использован или истек.", show_alert=True)
+                return
+            
+            # Получаем промокод для отображения информации
+            from database.crud import get_promo_code_by_id
+            promo_code = await get_promo_code_by_id(session, promo_code_id)
+            
+            if not promo_code:
+                await callback.answer("Промокод не найден", show_alert=True)
+                return
+            
+            # Формируем сообщение об успешном применении
+            expiry_date_str = promo_code.expiry_date.strftime("%d.%m.%Y") if promo_code.expiry_date else "не ограничен"
+            
+            success_text = (
+                f"✅ <b>Промокод применен!</b>\n\n"
+                f"🎁 Ваша персональная скидка: <b>{promo_code.value}%</b>\n"
+                f"⏰ Действует до: <b>{expiry_date_str}</b>\n\n"
+                f"Теперь выберите тариф и оплатите со скидкой!"
+            )
+            
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="💳 Выбрать тариф со скидкой", callback_data="subscribe")],
+                    [InlineKeyboardButton(text="🎀 Личный кабинет", callback_data="back_to_profile")]
+                ]
+            )
+            
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            
+            await callback.message.answer(
+                success_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            
+    except ValueError:
+        await callback.answer("Ошибка: некорректный ID промокода", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка при применении промокода через кнопку: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка при применении промокода", show_alert=True)
 
 # --- Конец обработчиков промокодов ---
 
@@ -3149,13 +3187,14 @@ async def process_manage_subscription(callback: types.CallbackQuery):
             await process_back_to_profile(callback)
             return
 
-        end_date_str = active_sub.end_date.strftime("%d.%m.%Y")
+        # Форматируем дату окончания (с учетом пожизненной подписки)
+        end_date_str = format_subscription_end_date(active_sub, escape_for_markdown=True)
         # Автопродление активно, если is_recurring_active=True
         is_autorenewal_active = user.is_recurring_active
         autorenewal_status_text = "Включено ✅" if is_autorenewal_active else "Отключено ❌"
 
         # Экранируем динамические части
-        escaped_end_date = escape_markdown_v2(end_date_str)
+        escaped_end_date = end_date_str  # Уже экранировано в format_subscription_end_date
         escaped_autorenewal_status = escape_markdown_v2(autorenewal_status_text)
         escaped_start_date = escape_markdown_v2(active_sub.start_date.strftime("%d.%m.%Y"))
 
@@ -3163,16 +3202,9 @@ async def process_manage_subscription(callback: types.CallbackQuery):
         profile_info_text = f"🗓 Подписка оформлена: *{escaped_start_date}*\n"
         profile_info_text += f"📆 Действует до: *{escaped_end_date}*\n"
 
-        days_left_for_profile = (active_sub.end_date - datetime.now()).days
-        if days_left_for_profile == 1:
-            days_text_for_profile = "1 день"
-        elif days_left_for_profile == 0:
-            days_text_for_profile = "последний день"
-        elif days_left_for_profile < 0:
-            days_text_for_profile = "истекла"
-        else:
-            days_text_for_profile = f"{days_left_for_profile} дней"
-        profile_info_text += f"⏳ Осталось: *{escape_markdown_v2(days_text_for_profile)}*\n"
+        # Форматируем оставшиеся дни (с учетом пожизненной подписки)
+        days_text_for_profile = format_subscription_days_left(active_sub, escape_for_markdown=True)
+        profile_info_text += f"⏳ Осталось: *{days_text_for_profile}*\n"
         profile_info_text += f"🔐 Статус подписки: *Активна* ✅\n\n"
 
         # Формируем информацию о лояльности
@@ -3194,6 +3226,22 @@ async def process_manage_subscription(callback: types.CallbackQuery):
             manage_text += escape_markdown_v2(info_text) + "\n\n"
 
         inline_keyboard_buttons = []
+        
+        # НОВАЯ КНОПКА: Досрочное продление
+        from utils.early_renewal import check_early_renewal_eligibility
+        from datetime import datetime as dt_now
+        
+        can_renew, reason, info = await check_early_renewal_eligibility(session, user.id)
+        if info and info.get('bonus_eligible'):
+            inline_keyboard_buttons.append([InlineKeyboardButton(
+                text="🎁 Продлить досрочно с бонусом +3 дня",
+                callback_data="early_renewal"
+            )])
+        else:
+            inline_keyboard_buttons.append([InlineKeyboardButton(
+                text="💎 Продлить подписку",
+                callback_data="early_renewal"
+            )])
         
         # Основная кнопка переключения автопродления
         if is_autorenewal_active:
@@ -3272,7 +3320,7 @@ async def process_disable_autorenewal(callback: types.CallbackQuery): # Убра
 # НОВЫЙ обработчик - создание заявки на отмену автопродления
 @user_router.callback_query(F.data == "request_cancel_autorenewal")
 async def process_request_cancel_autorenewal(callback: types.CallbackQuery):
-    """Обработчик кнопки 'Отменить автопродление' - создает заявку"""
+    """Обработчик кнопки 'Отменить автопродление' - показывает причины"""
     logger.info(f"[REQUEST_CANCEL_RENEWAL] User {callback.from_user.id} requested cancellation.")
     log_message(callback.from_user.id, "request_cancel_autorenewal", "action")
 
@@ -3288,47 +3336,198 @@ async def process_request_cancel_autorenewal(callback: types.CallbackQuery):
             await process_manage_subscription(callback)
             return
 
-        # Создаем заявку
+        # Показываем выбор причины отмены
+        text = (
+            "🤔 <b>Почему вы хотите отменить автопродление?</b>\n\n"
+            "Пожалуйста, выберите причину, это поможет нам стать лучше 💖"
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💸 Дорого", callback_data="cancel_reason_expensive")],
+            [InlineKeyboardButton(text="📉 Не использую контент", callback_data="cancel_reason_no_use")],
+            [InlineKeyboardButton(text="⏸ Временная пауза", callback_data="cancel_reason_pause")],
+            [InlineKeyboardButton(text="😞 Не оправдал ожидания", callback_data="cancel_reason_expectations")],
+            [InlineKeyboardButton(text="🔄 Технические проблемы", callback_data="cancel_reason_technical")],
+            [InlineKeyboardButton(text="💭 Другая причина", callback_data="cancel_reason_other")],
+            [InlineKeyboardButton(text="« Назад", callback_data="manage_subscription")]
+        ])
+        
         try:
-            request = await create_autorenewal_cancellation_request(session, user.id)
-            logger.info(f"[REQUEST_CANCEL_RENEWAL] Created request ID {request.id} for user {user.id}")
-            
-            # Отправляем уведомления
-            from bot import bot
-            await send_cancellation_request_notifications(bot, user, request.id)
-            
-            await callback.answer("✅ Заявка создана", show_alert=False)
-            
-            # Отправляем полноценное сообщение пользователю
-            support_username = "momsclubsupport"
-            confirmation_text = (
-                "✅ <b>Ваша заявка принята!</b>\n\n"
-                "С вами свяжется служба заботы для уточнения деталей.\n\n"
-                "Если вы хотите ускорить рассмотрение отмены автопродления, напишите нам в службу заботы 👇"
+            await callback.message.edit_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard
             )
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="💬 Написать в службу заботы", 
-                    url=f"https://t.me/{support_username}"
-                )]
-            ])
-            
-            try:
-                await callback.message.answer(
-                    confirmation_text,
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки подтверждения заявки: {e}")
-            
-            # Обновляем сообщение
-            await process_manage_subscription(callback)
-            
-        except Exception as e:
-            logger.error(f"[REQUEST_CANCEL_RENEWAL] Error creating request: {e}", exc_info=True)
-            await callback.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
+        except:
+            await callback.message.answer(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+        
+        await callback.answer()
+
+
+# Обработчики выбора причины отмены
+@user_router.callback_query(F.data.startswith("cancel_reason_"))
+async def process_cancel_reason(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик выбора причины отмены автопродления"""
+    reason_code = callback.data.replace("cancel_reason_", "")
+    
+    # Если выбрана "Другая причина" - запрашиваем ввод
+    if reason_code == "other":
+        await state.set_state(CancelRenewalStates.waiting_for_custom_reason)
+        
+        text = (
+            "💭 <b>Напишите свою причину отмены автопродления</b>\n\n"
+            "Это поможет нам стать лучше 💖"
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад к выбору", callback_data="request_cancel_autorenewal")]
+        ])
+        
+        try:
+            await callback.message.edit_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+        except:
+            await callback.message.answer(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+        
+        await callback.answer()
+        return
+    
+    # Маппинг кодов на текстовые причины
+    reasons = {
+        "expensive": "💸 Дорого",
+        "no_use": "📉 Не использую контент",
+        "pause": "⏸ Временная пауза",
+        "expectations": "😞 Не оправдал ожидания",
+        "technical": "🔄 Технические проблемы"
+    }
+    
+    reason_text = reasons.get(reason_code, "Не указана")
+    
+    try:
+        # Создаем заявку
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not user:
+                await callback.answer("Пользователь не найден.", show_alert=True)
+                return
+
+            user_id = user.id
+            request = await create_autorenewal_cancellation_request(session, user_id, reason=reason_text)
+            request_id = request.id
+            logger.info(f"[REQUEST_CANCEL_RENEWAL] Created request ID {request_id} for user {user_id} with reason: {reason_text}")
+        
+        # Отправляем уведомления (в новой сессии)
+        from bot import bot
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            if user:
+                await send_cancellation_request_notifications(bot, user, request_id, reason_text)
+        
+        await callback.answer("✅ Заявка создана", show_alert=False)
+        
+        # Отправляем подтверждение пользователю
+        confirmation_text = (
+            "✅ <b>Ваша заявка на отмену автопродления принята!</b>\n\n"
+            f"📝 Причина: {reason_text}\n\n"
+            "⏳ Заявка будет рассмотрена в ближайшее время.\n"
+            "Мы свяжемся с вами для уточнения деталей.\n\n"
+            "🤎 Спасибо за обратную связь!"
+        )
+        
+        try:
+            await callback.message.edit_text(
+                confirmation_text,
+                parse_mode="HTML"
+            )
+        except:
+            await callback.message.answer(
+                confirmation_text,
+                parse_mode="HTML"
+            )
+        
+        # Через 3 секунды возвращаем в управление подпиской
+        import asyncio
+        await asyncio.sleep(3)
+        await process_manage_subscription(callback)
+        
+    except Exception as e:
+        logger.error(f"[REQUEST_CANCEL_RENEWAL] Error creating request: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
+
+
+# Обработчик ввода своей причины отмены
+@user_router.message(StateFilter(CancelRenewalStates.waiting_for_custom_reason))
+async def process_custom_cancel_reason(message: types.Message, state: FSMContext):
+    """Обработчик ввода своей причины отмены автопродления"""
+    custom_reason = message.text.strip()
+    
+    if len(custom_reason) < 5:
+        await message.answer(
+            "❌ Причина слишком короткая. Пожалуйста, опишите подробнее (минимум 5 символов)."
+        )
+        return
+    
+    if len(custom_reason) > 500:
+        await message.answer(
+            "❌ Причина слишком длинная. Пожалуйста, сократите до 500 символов."
+        )
+        return
+    
+    reason_text = f"💭 Другая причина: {custom_reason}"
+    
+    try:
+        # Создаем заявку
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, message.from_user.id)
+            if not user:
+                await message.answer("Пользователь не найден.")
+                await state.clear()
+                return
+
+            user_id = user.id
+            request = await create_autorenewal_cancellation_request(session, user_id, reason=reason_text)
+            request_id = request.id
+            logger.info(f"[REQUEST_CANCEL_RENEWAL] Created request ID {request_id} for user {user_id} with custom reason")
+        
+        # Отправляем уведомления (в новой сессии)
+        from bot import bot
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, message.from_user.id)
+            if user:
+                await send_cancellation_request_notifications(bot, user, request_id, reason_text)
+        
+        # Отправляем подтверждение пользователю
+        confirmation_text = (
+            "✅ <b>Ваша заявка на отмену автопродления принята!</b>\n\n"
+            f"📝 Причина: {custom_reason}\n\n"
+            "⏳ Заявка будет рассмотрена в ближайшее время.\n"
+            "Мы свяжемся с вами для уточнения деталей.\n\n"
+            "🤎 Спасибо за обратную связь!"
+        )
+        
+        await message.answer(
+            confirmation_text,
+            parse_mode="HTML"
+        )
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"[REQUEST_CANCEL_RENEWAL] Error creating request with custom reason: {e}", exc_info=True)
+        await message.answer("Произошла ошибка. Попробуйте позже.")
+        await state.clear()
+
 
 @user_router.callback_query(F.data == "enable_autorenewal")
 async def process_enable_autorenewal(callback: types.CallbackQuery):
@@ -4090,8 +4289,199 @@ async def process_any_back_to_profile(callback: types.CallbackQuery):
             # В случае ошибки пытаемся хотя бы вернуться на главную
             await callback.answer("Произошла ошибка. Пожалуйста, напишите /start для перехода в главное меню.")
 
+
+# ==================== FAQ (ЧАСТЫЕ ВОПРОСЫ) ====================
+
+@user_router.message(lambda message: message.text in ["❓ Частые вопросы", "Частые вопросы", "FAQ"])
+async def process_faq(message: types.Message):
+    """Обработчик кнопки 'Частые вопросы'"""
+    log_message(message.from_user.id, "faq_menu", "command")
+    
+    faq_text = """❓ <b>Частые вопросы</b>
+
+Выбери интересующий тебя вопрос, красотка! 💖"""
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎀 Как пользоваться личным кабинетом?", callback_data="faq_cabinet")],
+            [InlineKeyboardButton(text="💳 Как купить/продлить подписку?", callback_data="faq_purchase")],
+            [InlineKeyboardButton(text="💎 Что такое лояльность?", callback_data="faq_loyalty")],
+            [InlineKeyboardButton(text="🏆 Что такое достижения?", callback_data="faq_badges")],
+            [InlineKeyboardButton(text="👭 Что дает реферальная программа?", callback_data="faq_referral")],
+            [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq_message")]
+        ]
+    )
+    
+    await message.answer(faq_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+@user_router.callback_query(F.data == "back_to_faq")
+async def process_back_to_faq(callback: types.CallbackQuery):
+    """Возврат в меню FAQ"""
+    log_message(callback.from_user.id, "back_to_faq", "callback")
+    
+    faq_text = """❓ <b>Частые вопросы</b>
+
+Выбери интересующий тебя вопрос, красотка! 💖"""
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎀 Как пользоваться личным кабинетом?", callback_data="faq_cabinet")],
+            [InlineKeyboardButton(text="💳 Как купить/продлить подписку?", callback_data="faq_purchase")],
+            [InlineKeyboardButton(text="💎 Что такое лояльность?", callback_data="faq_loyalty")],
+            [InlineKeyboardButton(text="🏆 Что такое достижения?", callback_data="faq_badges")],
+            [InlineKeyboardButton(text="👭 Что дает реферальная программа?", callback_data="faq_referral")],
+            [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq_message")]
+        ]
+    )
+    
+    try:
+        await callback.message.edit_text(faq_text, reply_markup=keyboard, parse_mode="HTML")
+    except:
+        await callback.message.answer(faq_text, reply_markup=keyboard, parse_mode="HTML")
+    
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "faq_cabinet")
+async def process_faq_cabinet(callback: types.CallbackQuery):
+    """FAQ: Как пользоваться личным кабинетом"""
+    log_message(callback.from_user.id, "faq_cabinet", "callback")
+    
+    text = """🎀 <b>Как пользоваться личным кабинетом?</b>
+
+Личный кабинет — твой центр управления подпиской!
+
+Нажми на кнопку <b>"🎀 Личный кабинет"</b> в главном меню, и ты увидишь:
+
+💎 <b>Управление подпиской</b>
+   • Посмотреть когда заканчивается подписка
+   • Включить/выключить автопродление
+   • Продлить подписку досрочно с бонусом +3 дня
+
+📊 <b>Твоя статистика</b>
+   • Уровень лояльности (None/Silver/Gold/Platinum)
+   • Количество дней в клубе
+   • Твои достижения и награды
+
+🎁 <b>Бонусы</b>
+   • Персональные скидки
+   • Реферальная программа
+   • Специальные предложения
+
+💡 Заходи в личный кабинет регулярно — там всегда что-то интересное! 💖"""
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад к вопросам", callback_data="back_to_faq")]
+        ]
+    )
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "faq_purchase")
+async def process_faq_purchase(callback: types.CallbackQuery):
+    """FAQ: Как купить/продлить подписку"""
+    log_message(callback.from_user.id, "faq_purchase", "callback")
+    
+    text = """💳 <b>Как купить/продлить подписку?</b>
+
+Купить или продлить подписку очень просто!
+
+📍 <b>Если у тебя НЕТ подписки:</b>
+1. Нажми <b>"🎀 Личный кабинет"</b>
+2. Нажми <b>"💸 Оформить подписку"</b>
+3. Выбери тариф (1, 2 или 3 месяца)
+4. Оплати картой — и готово! 🎉
+
+📍 <b>Если подписка ЗАКАНЧИВАЕТСЯ:</b>
+1. Зайди в <b>"🎀 Личный кабинет"</b>
+2. Нажми <b>"💎 Управление подпиской"</b>
+3. Выбери <b>"💎 Продлить подписку"</b>
+4. Выбери тариф и оплати
+
+💡 <b>ЛАЙФХАК:</b> Включи автопродление — подписка будет продлеваться автоматически, и ты не потеряешь доступ! 🔄
+
+🎁 <b>БОНУС:</b> Если продлишь за 7+ дней до окончания — получишь +3 дня в подарок! ✨"""
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад к вопросам", callback_data="back_to_faq")]
+        ]
+    )
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "faq_referral")
+async def process_faq_referral(callback: types.CallbackQuery):
+    """FAQ: Что дает реферальная программа"""
+    log_message(callback.from_user.id, "faq_referral", "callback")
+    
+    text = """👭 <b>Что дает реферальная программа?</b>
+
+Приглашай подруг и получай бонусы!
+
+🎁 <b>Что ты получаешь:</b>
+   • +7 дней подписки за каждую подругу
+   • Подруга тоже получает +7 дней
+   • Неограниченное количество приглашений!
+
+📍 <b>Как это работает:</b>
+1. Зайди в <b>"🎀 Личный кабинет"</b>
+2. Нажми <b>"🤝 Реферальная программа"</b>
+3. Скопируй свою реферальную ссылку
+4. Отправь подруге
+5. Когда она оплатит подписку — вы обе получите +7 дней! 🎉
+
+💡 Чем больше подруг пригласишь — тем дольше бесплатная подписка! 💖
+
+Твоя реферальная ссылка всегда доступна в личном кабинете 🎀"""
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад к вопросам", callback_data="back_to_faq")]
+        ]
+    )
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "close_faq_message")
+async def process_close_faq(callback: types.CallbackQuery):
+    """Закрытие меню FAQ с удалением сообщения"""
+    log_message(callback.from_user.id, "close_faq", "callback")
+    
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения FAQ: {e}")
+    
+    await callback.answer()
+
 # Функция для регистрации всех обработчиков
 def register_user_handlers(dp):
+    # Регистрируем обработчик досрочного продления
+    from handlers.early_renewal_handler import early_renewal_router
+    dp.include_router(early_renewal_router)
+    
+    # Регистрируем основной роутер
     dp.include_router(user_router)
 
 # Обработчик для кнопки с информацией о текущем отзыве

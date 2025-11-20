@@ -7,7 +7,8 @@ from aiogram.types import URLInputFile, BufferedInputFile, InlineKeyboardMarkup,
 from utils.constants import (
     TEMPORARY_PAYMENT_MODE, TEMPORARY_PAYMENT_ADMIN, TEMPORARY_PAYMENT_URL,
     SUBSCRIPTION_PRICE, SUBSCRIPTION_PRICE_2MONTHS, SUBSCRIPTION_PRICE_3MONTHS,
-    SUBSCRIPTION_DAYS, SUBSCRIPTION_DAYS_2MONTHS, SUBSCRIPTION_DAYS_3MONTHS
+    SUBSCRIPTION_DAYS, SUBSCRIPTION_DAYS_2MONTHS, SUBSCRIPTION_DAYS_3MONTHS,
+    LIFETIME_THRESHOLD, LIFETIME_SUBSCRIPTION_GROUP
 )
 
 # Настраиваем логгер
@@ -312,3 +313,68 @@ def admin_nav_back(callback_data: str = "admin_back") -> InlineKeyboardMarkup:
 
 def admin_nav_cancel(callback_data: str = "admin_cancel") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« Отмена", callback_data=callback_data)]])
+
+
+def is_lifetime_subscription(subscription) -> bool:
+    """Проверяет, является ли подписка бесконечной (пожизненной)"""
+    if not subscription:
+        return False
+    # Бесконечная подписка имеет end_date после LIFETIME_THRESHOLD
+    return subscription.end_date >= LIFETIME_THRESHOLD
+
+
+def format_subscription_end_date(subscription, escape_for_markdown: bool = False) -> str:
+    """
+    Форматирует дату окончания подписки для отображения.
+    Для пожизненных подписок возвращает "∞ Пожизненная".
+    
+    Args:
+        subscription: Объект подписки
+        escape_for_markdown: Если True, экранирует для MarkdownV2
+        
+    Returns:
+        str: Отформатированная дата или "∞ Пожизненная"
+    """
+    if not subscription:
+        return "Нет подписки"
+    
+    if is_lifetime_subscription(subscription):
+        return f"{LIFETIME_SUBSCRIPTION_GROUP} Пожизненная"
+    
+    date_str = subscription.end_date.strftime("%d.%m.%Y")
+    if escape_for_markdown:
+        return escape_markdown_v2(date_str)
+    return date_str
+
+
+def format_subscription_days_left(subscription, escape_for_markdown: bool = False) -> str:
+    """
+    Форматирует количество оставшихся дней подписки.
+    Для пожизненных подписок возвращает "∞".
+    
+    Args:
+        subscription: Объект подписки
+        escape_for_markdown: Если True, экранирует для MarkdownV2
+        
+    Returns:
+        str: Количество дней или "∞"
+    """
+    if not subscription:
+        return "0 дней"
+    
+    if is_lifetime_subscription(subscription):
+        return LIFETIME_SUBSCRIPTION_GROUP
+    
+    days_left = (subscription.end_date - datetime.now()).days
+    if days_left == 1:
+        days_text = "1 день"
+    elif days_left == 0:
+        days_text = "последний день"
+    elif days_left < 0:
+        days_text = "истекла"
+    else:
+        days_text = f"{days_left} дней"
+    
+    if escape_for_markdown:
+        return escape_markdown_v2(days_text)
+    return days_text

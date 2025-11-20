@@ -23,9 +23,10 @@ from database.crud import (
     get_all_scheduled_messages, get_scheduled_message_by_id, delete_scheduled_message,
     get_unsent_recipients, update_recipient_status,
     get_user_by_telegram_id, get_user_by_id, get_user_by_username,
-    get_users_with_active_subscriptions, get_all_users_with_subscriptions
+    get_users_with_active_subscriptions, get_all_users_with_subscriptions,
+    update_group_activity
 )
-from utils.constants import ADMIN_IDS
+from utils.constants import ADMIN_IDS, CLUB_GROUP_ID
 from utils.helpers import safe_edit_message
 import re
 
@@ -35,6 +36,20 @@ message_logger = logging.getLogger("messages")
 
 # Создание маршрутизатора для обработчиков сообщений
 message_router = Router()
+
+
+# ОТКЛЮЧЕНО: Обработчик сообщений из группы
+# Бот больше не контролирует общение в группе - участницы могут свободно общаться
+# без вмешательства бота и спам-сообщений о лимитах
+
+# @message_router.message(F.chat.id == CLUB_GROUP_ID)
+# async def handle_group_message(message: types.Message):
+#     """
+#     Обработчик сообщений из группы для отслеживания активности пользователей
+#     ОТКЛЮЧЕН по просьбе заказчика - бот не должен влезать в общение
+#     """
+#     pass
+
 
 # Состояния для FSM (конечного автомата)
 class MessageStates(StatesGroup):

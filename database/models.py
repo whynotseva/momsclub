@@ -36,6 +36,10 @@ class User(Base):
     pending_loyalty_reward = Column(Boolean, default=False)  # Флаг ожидания выбора бонуса
     gift_due = Column(Boolean, default=False)  # Флаг подарка для Platinum
     
+    # Поля защиты от злоупотребления промокодами возврата
+    return_promo_count = Column(Integer, default=0)  # Сколько раз получал промокод возврата
+    last_return_promo_date = Column(DateTime, nullable=True)  # Когда последний раз получал промокод возврата
+    
     # Поле для группы администратора
     admin_group = Column(String(50), nullable=True)  # 'creator', 'developer', 'curator' или NULL для обычных пользователей
     
@@ -114,9 +118,15 @@ class PromoCode(Base):
     is_active = Column(Boolean, default=True)
     expiry_date = Column(DateTime, nullable=True)  # Дата истечения срока действия (None - бессрочный)
     created_at = Column(DateTime, server_default=func.now())
+    
+    # Поля для персональных промокодов
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # Привязка к пользователю (NULL = общий промокод)
+    is_personal = Column(Boolean, default=False)  # Флаг персонального промокода
+    auto_generated = Column(Boolean, default=False)  # Флаг автоматической генерации
 
     # Связь с использовавшими пользователями
     used_by_users = relationship("UserPromoCode", back_populates="promo_code")
+    user = relationship("User", foreign_keys=[user_id])  # Связь с пользователем для персональных промокодов
 
     def __repr__(self):
         return f"<PromoCode {self.code}>"
@@ -299,3 +309,21 @@ class UserBadge(Base):
     
     def __repr__(self):
         return f"<UserBadge {self.badge_type} for user {self.user_id}>"
+
+
+class GroupActivity(Base):
+    """Модель для отслеживания активности пользователей в группе"""
+    __tablename__ = "group_activity"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    message_count = Column(Integer, default=0)  # Количество сообщений в группе
+    last_activity = Column(DateTime, nullable=True)  # Дата и время последнего сообщения
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Отношение к пользователю
+    user = relationship("User")
+    
+    def __repr__(self):
+        return f"<GroupActivity user_id={self.user_id} messages={self.message_count}>"

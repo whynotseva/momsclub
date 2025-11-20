@@ -13,10 +13,16 @@ DATABASE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 DATABASE_URL = f"sqlite+aiosqlite:///{DATABASE_PATH}"
 
 # Создание движка базы данных
-engine = create_async_engine(DATABASE_URL, echo=True, connect_args={"check_same_thread": False})
+# SQL-логирование отключено по умолчанию для безопасности (не логируем SQL в продакшене)
+# Для отладки можно включить через переменную окружения SQL_ECHO=true
+SQL_ECHO = os.getenv("SQL_ECHO", "False").lower() == "true"
+engine = create_async_engine(DATABASE_URL, echo=SQL_ECHO, connect_args={"check_same_thread": False})
 
 # Создание сессии для работы с базой данных
-AsyncSessionLocal = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+# ИСПРАВЛЕНО: expire_on_commit=True для предотвращения использования устаревших данных
+# После commit все объекты в сессии помечаются как "expired" и будут перезагружены при следующем доступе
+# Это гарантирует актуальность данных, но требует явного session.refresh() для немедленного доступа
+AsyncSessionLocal = sessionmaker(engine, expire_on_commit=True, class_=AsyncSession)
 
 # Базовый класс для моделей
 Base = declarative_base()

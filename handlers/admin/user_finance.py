@@ -48,8 +48,7 @@ async def calculate_user_finance_stats(session, user: User) -> dict:
             'average_check': 0,
             'last_payment_amount': 0,
             'last_payment_date': None,
-            'autopay_count': 0,
-            'autopay_percentage': 0,
+            'is_recurring_active': getattr(user, 'is_recurring_active', False),
             'first_payment_date': None,
             'tenure_days': 0
         }
@@ -71,9 +70,8 @@ async def calculate_user_finance_stats(session, user: User) -> dict:
     # Дата первой оплаты для отображения
     first_payment_date = user.first_payment_date
     
-    # Автоплатежи
-    autopay_count = sum(1 for p in payments if p.payment_method == 'yookassa_autopay')
-    autopay_percentage = (autopay_count / payment_count * 100) if payment_count > 0 else 0
+    # Статус автопродления (текущий статус, а не история)
+    is_recurring_active = getattr(user, 'is_recurring_active', False)
     
     return {
         'total_amount': total_amount,
@@ -81,8 +79,7 @@ async def calculate_user_finance_stats(session, user: User) -> dict:
         'average_check': average_check,
         'last_payment_amount': last_payment_amount,
         'last_payment_date': last_payment_date,
-        'autopay_count': autopay_count,
-        'autopay_percentage': autopay_percentage,
+        'is_recurring_active': is_recurring_active,
         'first_payment_date': first_payment_date,
         'tenure_days': tenure_days
     }
@@ -146,12 +143,11 @@ async def show_user_finance(callback: CallbackQuery):
                     
                     text += f"💳 <b>Последний платёж:</b> {stats['last_payment_amount']:.0f}₽ ({time_ago})\n\n"
                 
-                # Автоплатежи
-                if stats['autopay_count'] > 0:
-                    text += f"♻️ <b>Автоплатежей:</b> {stats['autopay_count']} из {stats['payment_count']} "
-                    text += f"({stats['autopay_percentage']:.0f}%)\n"
+                # Статус автопродления
+                if stats['is_recurring_active']:
+                    text += f"🔄 <b>Автопродление:</b> Включено ✅\n"
                 else:
-                    text += f"♻️ <b>Автоплатежей:</b> Нет\n"
+                    text += f"🔄 <b>Автопродление:</b> Выключено ❌\n"
             
             # Кнопка назад
             keyboard = InlineKeyboardMarkup(inline_keyboard=[

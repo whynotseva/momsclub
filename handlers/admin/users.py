@@ -1798,11 +1798,14 @@ async def process_payment_history(callback: CallbackQuery):
                     text += f"   {method_emoji} Способ: {payment.payment_method or 'не указан'}\n"
                     text += f"   💰 Сумма: {payment.amount}₽\n"
                     
-                    # ID транзакции для идентификации
+                    # ID транзакции для идентификации (без эмодзи для читаемости)
                     if payment.transaction_id:
-                        text += f"   � ID: <code>{payment.transaction_id}</code>\n"
+                        text += f"   ID: <code>{payment.transaction_id}</code>\n"
                     
-                    text += f"   📅 Дата: {payment.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+                    # Время в MSK (добавляем 3 часа если время в UTC)
+                    from datetime import timedelta
+                    payment_time_msk = payment.created_at + timedelta(hours=3)
+                    text += f"   📅 Дата: {payment_time_msk.strftime('%d.%m.%Y %H:%M')} MSK\n"
                     
                     # TODO: Добавить последние 4 цифры карты когда будет сохраняться в БД
                     # if payment.card_last4:

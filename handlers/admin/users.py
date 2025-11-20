@@ -1171,7 +1171,7 @@ async def process_grant_badge_menu(callback: CallbackQuery):
         
         await callback.message.edit_text(
             f"<b>🏆 Выдача достижения</b>\n\n"
-            f"Пользователь: {user_first_name} {user_last_name} (@{user.username or 'нет username'})\n\n"
+            f"Пользователь: {user.first_name or ''} {user.last_name or ''} (@{user.username or 'нет username'})\n\n"
             f"<b>📋 Автоматические достижения</b> — выдаются автоматически при выполнении условий\n"
             f"<b>⭐ Специальные достижения</b> — выдаются только администраторами в знак особой благодарности\n\n"
             f"Выберите достижение для выдачи:",
@@ -1300,7 +1300,7 @@ async def process_revoke_badge_menu(callback: CallbackQuery):
         
         await callback.message.edit_text(
             f"<b>🗑️ Удаление достижения</b>\n\n"
-            f"Пользователь: {user_first_name} {user_last_name} (@{user.username or 'нет username'})\n\n"
+            f"Пользователь: {user.first_name or ''} {user.last_name or ''} (@{user.username or 'нет username'})\n\n"
             f"<b>⚠️ Внимание:</b> Достижение будет удалено без уведомления пользователя.\n\n"
             f"Выберите достижение для удаления:",
             reply_markup=keyboard,

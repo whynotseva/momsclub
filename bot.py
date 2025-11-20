@@ -583,17 +583,29 @@ async def loyalty_nightly_job():
                     
                     report_text += f"\n{'─' * 30}\n✅ <b>Проверка завершена успешно</b>"
                     
-                    # Отправляем отчёт всем админам
-                    from utils.constants import ADMIN_IDS
+                    # Отправляем отчёт админам (кроме кураторов)
+                    from utils.constants import ADMIN_IDS, ADMIN_GROUP_CURATOR
                     if ADMIN_IDS:
                         for admin_id in ADMIN_IDS:
                             try:
+                                # Проверяем роль админа в БД
+                                admin_user_result = await session.execute(
+                                    select(User.admin_group).where(User.telegram_id == admin_id)
+                                )
+                                admin_user = admin_user_result.scalar_one_or_none()
+                                
+                                # Пропускаем кураторов
+                                if admin_user == ADMIN_GROUP_CURATOR:
+                                    loyalty_logger.info(f"⏭️ Пропуск отправки отчёта куратору {admin_id}")
+                                    continue
+                                
                                 await bot.send_message(
                                     admin_id,
                                     report_text,
                                     parse_mode="HTML"
                                 )
-                                loyalty_logger.info(f"✅ Отчёт о лояльности отправлен админу {admin_id}")
+                                role_emoji = {'creator': '👑', 'developer': '💻'}.get(admin_user, '👤')
+                                loyalty_logger.info(f"✅ Отчёт о лояльности отправлен {role_emoji} админу {admin_id} ({admin_user or 'unknown'})")
                             except Exception as send_error:
                                 loyalty_logger.error(
                                     f"❌ Ошибка отправки отчёта админу {admin_id}: {send_error}"

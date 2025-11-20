@@ -603,8 +603,9 @@ async def _process_webhook(request: Request):
         
         # ИСПРАВЛЕНО HIGH-001: Требуем только криптографическую HMAC подпись
         # X-Idempotence-Key - это НЕ подпись, это просто ID запроса
-        # Принимаем только X-Content-HMAC-SHA256 для безопасности
-        signature_header = request.headers.get("X-Content-HMAC-SHA256")
+        # ЮКасса отправляет подпись в заголовке X-Content-Signature (не X-Content-HMAC-SHA256!)
+        # Источник: https://yookassa.ru/developers/using-api/webhooks#signature
+        signature_header = request.headers.get("X-Content-Signature") or request.headers.get("X-Content-HMAC-SHA256")
         
         # Валидация подписи вебхука
         if not verify_yookassa_signature(body_str, signature_header=signature_header, client_ip=client_ip):

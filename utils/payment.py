@@ -329,7 +329,7 @@ def verify_yookassa_signature(notification_body: str, signature_header: str = No
         # Убрали IP fallback - это небезопасно, IP легко подделать через прокси
         if not signature_header:
             logger.error(f"🚨 БЕЗОПАСНОСТЬ: Запрос без HMAC подписи от IP {client_ip}")
-            logger.error(f"ОТКЛОНЕНО: Webhook без X-Content-HMAC-SHA256 заголовка")
+            logger.error(f"ОТКЛОНЕНО: Webhook без X-Content-Signature заголовка")
             return False
         
         # Проверяем HMAC подпись

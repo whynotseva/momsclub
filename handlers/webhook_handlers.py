@@ -601,11 +601,10 @@ async def _process_webhook(request: Request):
         
         webhook_logger.info(f"Тело запроса: {body_str[:500]}...")
         
-        # Получаем заголовок с подписью HMAC-SHA256
-        # YooKassa может использовать разные заголовки в зависимости от версии API
-        signature_header = request.headers.get("X-Content-HMAC-SHA256") or \
-                          request.headers.get("X-Idempotence-Key") or \
-                          request.headers.get("X-YooKassa-Signature")
+        # ИСПРАВЛЕНО HIGH-001: Требуем только криптографическую HMAC подпись
+        # X-Idempotence-Key - это НЕ подпись, это просто ID запроса
+        # Принимаем только X-Content-HMAC-SHA256 для безопасности
+        signature_header = request.headers.get("X-Content-HMAC-SHA256")
         
         # Валидация подписи вебхука
         if not verify_yookassa_signature(body_str, signature_header=signature_header, client_ip=client_ip):

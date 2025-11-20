@@ -180,11 +180,13 @@ async def apply_benefit_from_callback(
     """
     user_id = user.id  # Сохраняем ID заранее для логирования
     try:
-        # КРИТИЧНО: Блокируем строку пользователя для предотвращения дублирования
-        lock_query = select(User).where(User.id == user_id).with_for_update()
-        result = await db.execute(lock_query)
+        # ИСПРАВЛЕНО CRIT-002: Убрали with_for_update() для совместимости с SQLite
+        # SQLite не поддерживает SELECT FOR UPDATE
+        # Вместо блокировок используем проверку идемпотентности через LoyaltyEvent
+        user_query = select(User).where(User.id == user_id)
+        result = await db.execute(user_query)
         locked_user = result.scalar_one()
-        # ИСПРАВЛЕНО: сохраняем locked_user_id для защиты от greenlet
+        # Сохраняем locked_user_id для защиты от greenlet
         locked_user_id = locked_user.id
         
         # Проверяем идемпотентность: не применялся ли уже бонус для этого уровня

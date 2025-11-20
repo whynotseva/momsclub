@@ -325,50 +325,21 @@ def verify_yookassa_signature(notification_body: str, signature_header: str = No
             hashlib.sha256
         ).hexdigest()
         
-        # Если подпись передана в заголовке, сравниваем её
-        if signature_header:
-            # Используем compare_digest для защиты от timing attacks
-            if not hmac.compare_digest(expected_signature, signature_header):
-                logger.error(f"🚨 БЕЗОПАСНОСТЬ: Неверная HMAC подпись вебхука от IP {client_ip}")
-                logger.debug(f"Ожидаемая подпись: {expected_signature[:16]}..., получена: {signature_header[:16]}...")
-                return False
-            logger.debug(f"✅ HMAC подпись вебхука проверена успешно")
-        else:
-            # Если подпись не передана, проверяем IP адрес
-            # Если это не IP ЮКассы, отклоняем запрос
-            # Список доверенных IP ЮКассы
-            YOOKASSA_IPS = [
-                "185.71.76.0/27",
-                "185.71.77.0/27",
-                "77.75.153.0/25",
-                "77.75.156.11",
-                "77.75.156.35",
-                "77.75.154.128/25",
-                "2a02:5180::/32"
-            ]
-            
-            if client_ip:
-                import ipaddress
-                is_yookassa = False
-                try:
-                    ip_obj = ipaddress.ip_address(client_ip)
-                    for yookassa_net in YOOKASSA_IPS:
-                        try:
-                            if ip_obj in ipaddress.ip_network(yookassa_net, strict=False):
-                                is_yookassa = True
-                                break
-                        except ValueError:
-                            if str(ip_obj) == yookassa_net:
-                                is_yookassa = True
-                                break
-                except ValueError:
-                    pass
-                
-                if not is_yookassa:
-                    logger.error(f"🚨 БЕЗОПАСНОСТЬ: Запрос без подписи от не-ЮКасса IP: {client_ip}")
-                    return False
-                # Если IP ЮКассы, но подпись не передана - возможно старый формат API
-                logger.warning(f"⚠️ Подпись не передана в заголовке, но IP ЮКассы: {client_ip}. Проверяем структуру JSON.")
+        # ИСПРАВЛЕНО HIGH-001: Требуем ОБЯЗАТЕЛЬНОЕ наличие HMAC подписи
+        # Убрали IP fallback - это небезопасно, IP легко подделать через прокси
+        if not signature_header:
+            logger.error(f"🚨 БЕЗОПАСНОСТЬ: Запрос без HMAC подписи от IP {client_ip}")
+            logger.error(f"ОТКЛОНЕНО: Webhook без X-Content-HMAC-SHA256 заголовка")
+            return False
+        
+        # Проверяем HMAC подпись
+        # Используем compare_digest для защиты от timing attacks
+        if not hmac.compare_digest(expected_signature, signature_header):
+            logger.error(f"🚨 БЕЗОПАСНОСТЬ: Неверная HMAC подпись вебхука от IP {client_ip}")
+            logger.debug(f"Ожидаемая подпись: {expected_signature[:16]}..., получена: {signature_header[:16]}...")
+            return False
+        
+        logger.debug(f"✅ HMAC подпись вебхука проверена успешно от IP {client_ip}")
         
         # Дополнительная проверка структуры JSON
         try:

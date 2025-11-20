@@ -93,7 +93,8 @@ class PaymentLog(Base):
     amount = Column(Integer, nullable=False)  # Сумма в рублях
     status = Column(String(50), nullable=False)  # success, pending, failed
     payment_method = Column(String(100), nullable=True)
-    transaction_id = Column(String(255), nullable=True)
+    # ИСПРАВЛЕНО CRIT-001: transaction_id теперь unique и NOT NULL для идемпотентности
+    transaction_id = Column(String(255), nullable=False, unique=True, index=True)
     prodamus_order_id = Column(String(255), nullable=True)  # ID заказа в системе Prodamus
     payment_label = Column(String(255), nullable=True)  # Метка платежа для идентификации
     details = Column(Text, nullable=True)  # Дополнительная информация о платеже

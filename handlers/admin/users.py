@@ -1778,34 +1778,62 @@ async def process_payment_history(callback: CallbackQuery):
                 text += f"{'─' * 30}\n\n"
                 
                 for i, payment in enumerate(payments, 1):
-                    # Статус
-                    status_emoji = {
-                        'success': '✅',
-                        'succeeded': '✅',
-                        'pending': '⏳',
-                        'failed': '❌'
-                    }.get(payment.status, '❓')
+                    # Статус - русское название
+                    status_mapping = {
+                        'success': ('✅', 'Успешно'),
+                        'succeeded': ('✅', 'Успешно'),
+                        'pending': ('⏳', 'В ожидании'),
+                        'failed': ('❌', 'Не удачная оплата'),
+                        'canceled': ('🚫', 'Отменён')
+                    }
+                    status_emoji, status_text = status_mapping.get(payment.status, ('❓', payment.status))
                     
-                    # Способ оплаты
-                    method_emoji = {
-                        'yookassa': '💳',
-                        'prodamus': '💳',
-                        'manual': '👤'
-                    }.get(payment.payment_method, '💰')
+                    # Способ оплаты - русское название
+                    method_mapping = {
+                        'yookassa': ('💳', 'ЮКасса'),
+                        'yookassa_autopay': ('♻️', 'Автоплатеж'),
+                        'prodamus': ('💳', 'Prodamus'),
+                        'admin': ('👨‍💼', 'Выдано админом'),
+                        'manual': ('👤', 'Вручную'),
+                        'bonus': ('🎁', 'Бонус'),
+                        'legacy': ('📋', 'Старая система')
+                    }
+                    method_emoji, method_text = method_mapping.get(payment.payment_method, ('💰', payment.payment_method or 'не указан'))
                     
                     text += f"<b>{i}. Платёж #{payment.id}</b>\n"
-                    text += f"   {status_emoji} Статус: {payment.status}\n"
-                    text += f"   {method_emoji} Способ: {payment.payment_method or 'не указан'}\n"
-                    text += f"   💰 Сумма: {payment.amount}₽\n"
+                    text += f"   {status_emoji} Статус: {status_text}\n"
+                    text += f"   {method_emoji} Способ: {method_text}\n"
+                    
+                    # Сумма (0₽ для админских выдач)
+                    if payment.amount > 0:
+                        text += f"   💰 Сумма: {payment.amount}₽\n"
+                    else:
+                        text += f"   💰 Сумма: 0₽\n"
                     
                     # ID транзакции для идентификации (без эмодзи для читаемости)
                     if payment.transaction_id:
                         text += f"   ID: <code>{payment.transaction_id}</code>\n"
                     
-                    # Время в MSK (добавляем 3 часа если время в UTC)
-                    from datetime import timedelta
-                    payment_time_msk = payment.created_at + timedelta(hours=3)
-                    text += f"   📅 Дата: {payment_time_msk.strftime('%d.%m.%Y %H:%M')} MSK\n"
+                    # Конвертируем в московское время (MSK = UTC+3)
+                    try:
+                        import pytz
+                        from datetime import timezone
+                        
+                        # Если время без timezone - считаем UTC
+                        if payment.created_at.tzinfo is None:
+                            payment_time_utc = payment.created_at.replace(tzinfo=timezone.utc)
+                        else:
+                            payment_time_utc = payment.created_at
+                        
+                        # Конвертируем в московское время
+                        moscow_tz = pytz.timezone('Europe/Moscow')
+                        payment_time_msk = payment_time_utc.astimezone(moscow_tz)
+                        text += f"   📅 Дата: {payment_time_msk.strftime('%d.%m.%Y %H:%M')} (МСК)\n"
+                    except ImportError:
+                        # Если pytz не установлен - используем простое добавление 3 часов
+                        from datetime import timedelta
+                        payment_time_msk = payment.created_at + timedelta(hours=3)
+                        text += f"   📅 Дата: {payment_time_msk.strftime('%d.%m.%Y %H:%M')} (МСК)\n"
                     
                     # TODO: Добавить последние 4 цифры карты когда будет сохраняться в БД
                     # if payment.card_last4:

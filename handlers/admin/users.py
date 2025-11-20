@@ -24,6 +24,7 @@ def format_subscription_status(subscription) -> str:
 from utils.constants import (
     ADMIN_IDS, 
     CLUB_CHANNEL_URL,
+    CLUB_GROUP_ID,
     BADGE_NAMES,
     BADGE_NAMES_AND_DESCRIPTIONS,
     AUTOMATIC_BADGES,
@@ -32,7 +33,7 @@ from utils.constants import (
 )
 from utils.admin_permissions import is_admin, can_manage_admins
 from utils.group_manager import GroupManager
-from utils.helpers import fmt_date, html_kv, admin_nav_back
+from utils.helpers import fmt_date, html_kv, admin_nav_back, escape_markdown_v2, log_message
 from database.config import AsyncSessionLocal
 from database.crud import (
     get_user_by_telegram_id,
@@ -279,6 +280,26 @@ async def process_user_id(message: types.Message, state: FSMContext):
                 user_info_lines.append("")
                 user_info_lines.append(activity_info)
             
+            # Проверяем статус пользователя в группе
+            try:
+                member = await message.bot.get_chat_member(CLUB_GROUP_ID, user.telegram_id)
+                status_mapping = {
+                    "creator": ("👑", "Создатель группы"),
+                    "administrator": ("⚡", "Администратор"),
+                    "member": ("✅", "В группе"),
+                    "restricted": ("⚠️", "Ограничен"),
+                    "left": ("❌", "Покинул группу"),
+                    "kicked": ("🚫", "Исключён из группы")
+                }
+                emoji, status_text = status_mapping.get(member.status, ("❓", member.status))
+                group_status_info = f"👥 Статус в группе: {emoji} {status_text}\n"
+                user_info_lines.append("")
+                user_info_lines.append(group_status_info)
+            except Exception as e:
+                logger.warning(f"Не удалось проверить статус пользователя {user.telegram_id} в группе: {e}")
+                user_info_lines.append("")
+                user_info_lines.append("👥 Статус в группе: ❓ Не удалось проверить\n")
+            
             user_info = "\n".join(user_info_lines)
 
             # Кнопка автопродления
@@ -438,6 +459,24 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
             activity_info += f"📝 Сообщений: 0\n"
             activity_info += f"🕐 Последняя активность: никогда\n"
         
+        # Проверяем статус пользователя в группе
+        group_status_info = ""
+        try:
+            member = await callback.bot.get_chat_member(CLUB_GROUP_ID, user.telegram_id)
+            status_mapping = {
+                "creator": ("👑", "Создатель группы"),
+                "administrator": ("⚡", "Администратор"),
+                "member": ("✅", "В группе"),
+                "restricted": ("⚠️", "Ограничен"),
+                "left": ("❌", "Покинул группу"),
+                "kicked": ("🚫", "Исключён из группы")
+            }
+            emoji, status_text = status_mapping.get(member.status, ("❓", member.status))
+            group_status_info = f"👥 Статус в группе: {emoji} {status_text}\n"
+        except Exception as e:
+            logger.warning(f"Не удалось проверить статус пользователя {user.telegram_id} в группе: {e}")
+            group_status_info = "👥 Статус в группе: ❓ Не удалось проверить\n"
+        
         # Формируем ссылку на username (как в process_user_id)
         profile_link = (
             f'<a href="https://t.me/{user.username}">@{user.username}</a>' if user.username else "Не указан"
@@ -461,6 +500,7 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
             html_kv("Подписка", subscription_status),
             loyalty_info,
             activity_info,
+            group_status_info,
         ]
         
         if user_badges:

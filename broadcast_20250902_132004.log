@@ -1,0 +1,50 @@
+2025-09-02 13:20:20,606 - __main__ - INFO - 🚀 Начало рассылки: 2025-09-02 13:20:20
+2025-09-02 13:20:20,606 - __main__ - INFO - 🚀 Запуск рассылки в ТЕСТОВЫЙ режиме
+2025-09-02 13:20:20,610 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2025-09-02 13:20:20,636 - sqlalchemy.engine.Engine - INFO - SELECT users.id, users.telegram_id, users.username, users.first_name, users.last_name, users.is_active, users.referrer_id, users.referral_code, users.welcome_sent, users.created_at, users.updated_at, users.birthday, users.birthday_gift_year, users.payment_method_id, users.is_recurring_active, users.phone, users.email, users.reminder_sent, users.is_blocked 
+FROM users 
+WHERE users.telegram_id = ?
+2025-09-02 13:20:20,637 - sqlalchemy.engine.Engine - INFO - [generated in 0.00069s] (534740911,)
+2025-09-02 13:20:20,640 - sqlalchemy.engine.Engine - INFO - SELECT users.id, users.telegram_id, users.username, users.first_name, users.last_name, users.is_active, users.referrer_id, users.referral_code, users.welcome_sent, users.created_at, users.updated_at, users.birthday, users.birthday_gift_year, users.payment_method_id, users.is_recurring_active, users.phone, users.email, users.reminder_sent, users.is_blocked 
+FROM users 
+WHERE users.telegram_id = ?
+2025-09-02 13:20:20,640 - sqlalchemy.engine.Engine - INFO - [cached since 0.003858s ago] (44054166,)
+2025-09-02 13:20:20,641 - sqlalchemy.engine.Engine - INFO - SELECT users.id, users.telegram_id, users.username, users.first_name, users.last_name, users.is_active, users.referrer_id, users.referral_code, users.welcome_sent, users.created_at, users.updated_at, users.birthday, users.birthday_gift_year, users.payment_method_id, users.is_recurring_active, users.phone, users.email, users.reminder_sent, users.is_blocked 
+FROM users 
+WHERE users.telegram_id = ?
+2025-09-02 13:20:20,642 - sqlalchemy.engine.Engine - INFO - [cached since 0.005408s ago] (6995044681,)
+2025-09-02 13:20:20,642 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2025-09-02 13:20:20,643 - __main__ - INFO - 🧪 Тестовый режим: найдено 3 администраторов
+2025-09-02 13:20:20,643 - __main__ - INFO - 📤 Отправка 1/3 пользователю 534740911
+2025-09-02 13:20:21,181 - __main__ - INFO - 📤 Отправка 2/3 пользователю 44054166
+2025-09-02 13:20:21,381 - __main__ - INFO - 📤 Отправка 3/3 пользователю 6995044681
+2025-09-02 13:20:21,564 - __main__ - INFO - 🏁 Окончание рассылки: 2025-09-02 13:20:21
+2025-09-02 13:20:21,565 - __main__ - INFO - ⏱️ Общее время: 0:00:00.958516
+2025-09-02 13:20:21,565 - __main__ - INFO - 📊 Итоговая статистика рассылки:
+2025-09-02 13:20:21,566 - __main__ - INFO - 
+📊 <b>ОТЧЕТ О РАССЫЛКЕ</b>
+
+⏱️ <b>Время выполнения:</b> 0:00:00.958516
+📅 <b>Завершено:</b> 2025-09-02 13:20:21
+
+📈 <b>ОБЩАЯ СТАТИСТИКА:</b>
+👥 Всего пользователей: 3
+✅ Успешно отправлено: 3
+🚫 Заблокированных: 0
+❌ Ошибок: 0
+📊 Успешность: 100.0%
+
+🚫 <b>ЗАБЛОКИРОВАННЫЕ ПОЛЬЗОВАТЕЛИ:</b>
+Нет заблокированных пользователей
+
+❌ <b>ОШИБКИ ОТПРАВКИ:</b>
+Нет ошибок отправки
+
+2025-09-02 13:20:21,639 - __main__ - INFO - 📊 Отчет отправлен администратору 534740911
+2025-09-02 13:20:21,708 - __main__ - INFO - 📊 Отчет отправлен администратору 44054166
+2025-09-02 13:20:21,779 - __main__ - INFO - 📊 Отчет отправлен администратору 6995044681
+2025-09-02 13:20:21,925 - asyncio - ERROR - Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x7f87dbf3f760>
+2025-09-02 13:20:21,926 - asyncio - ERROR - Unclosed connector
+connections: ['deque([(<aiohttp.client_proto.ResponseHandler object at 0x7f87dbef94e0>, 11204758.954798117)])']
+connector: <aiohttp.connector.TCPConnector object at 0x7f87dbf3f940>

@@ -1,0 +1,50 @@
+2025-11-03 17:01:34,786 - __main__ - INFO - 🚀 Начало рассылки: 2025-11-03 17:01:34
+2025-11-03 17:01:34,786 - __main__ - INFO - 🚀 Запуск рассылки в ТЕСТОВЫЙ режиме
+2025-11-03 17:01:34,788 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2025-11-03 17:01:34,813 - sqlalchemy.engine.Engine - INFO - SELECT users.id, users.telegram_id, users.username, users.first_name, users.last_name, users.is_active, users.referrer_id, users.referral_code, users.welcome_sent, users.created_at, users.updated_at, users.birthday, users.birthday_gift_year, users.yookassa_payment_method_id, users.is_recurring_active, users.phone, users.email, users.reminder_sent, users.is_blocked, users.is_first_payment_done, users.first_payment_date, users.current_loyalty_level, users.one_time_discount_percent, users.lifetime_discount_percent, users.pending_loyalty_reward, users.gift_due 
+FROM users 
+WHERE users.telegram_id = ?
+2025-11-03 17:01:34,813 - sqlalchemy.engine.Engine - INFO - [generated in 0.00046s] (534740911,)
+2025-11-03 17:01:34,815 - sqlalchemy.engine.Engine - INFO - SELECT users.id, users.telegram_id, users.username, users.first_name, users.last_name, users.is_active, users.referrer_id, users.referral_code, users.welcome_sent, users.created_at, users.updated_at, users.birthday, users.birthday_gift_year, users.yookassa_payment_method_id, users.is_recurring_active, users.phone, users.email, users.reminder_sent, users.is_blocked, users.is_first_payment_done, users.first_payment_date, users.current_loyalty_level, users.one_time_discount_percent, users.lifetime_discount_percent, users.pending_loyalty_reward, users.gift_due 
+FROM users 
+WHERE users.telegram_id = ?
+2025-11-03 17:01:34,815 - sqlalchemy.engine.Engine - INFO - [cached since 0.00228s ago] (44054166,)
+2025-11-03 17:01:34,815 - sqlalchemy.engine.Engine - INFO - SELECT users.id, users.telegram_id, users.username, users.first_name, users.last_name, users.is_active, users.referrer_id, users.referral_code, users.welcome_sent, users.created_at, users.updated_at, users.birthday, users.birthday_gift_year, users.yookassa_payment_method_id, users.is_recurring_active, users.phone, users.email, users.reminder_sent, users.is_blocked, users.is_first_payment_done, users.first_payment_date, users.current_loyalty_level, users.one_time_discount_percent, users.lifetime_discount_percent, users.pending_loyalty_reward, users.gift_due 
+FROM users 
+WHERE users.telegram_id = ?
+2025-11-03 17:01:34,815 - sqlalchemy.engine.Engine - INFO - [cached since 0.003047s ago] (6995044681,)
+2025-11-03 17:01:34,816 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2025-11-03 17:01:34,816 - __main__ - INFO - 🧪 Тестовый режим: найдено 3 администраторов
+2025-11-03 17:01:34,816 - __main__ - INFO - 📤 Отправка 1/3 пользователю 534740911
+2025-11-03 17:01:35,539 - __main__ - INFO - 📤 Отправка 2/3 пользователю 44054166
+2025-11-03 17:01:36,142 - __main__ - INFO - 📤 Отправка 3/3 пользователю 6995044681
+2025-11-03 17:01:36,700 - __main__ - INFO - 🏁 Окончание рассылки: 2025-11-03 17:01:36
+2025-11-03 17:01:36,700 - __main__ - INFO - ⏱️ Общее время: 0:00:01.914177
+2025-11-03 17:01:36,700 - __main__ - INFO - 📊 Итоговая статистика рассылки:
+2025-11-03 17:01:36,700 - __main__ - INFO - 
+📊 <b>ОТЧЕТ О РАССЫЛКЕ СИСТЕМЫ ЛОЯЛЬНОСТИ</b>
+
+⏱️ <b>Время выполнения:</b> 0:00:01.914177
+📅 <b>Завершено:</b> 2025-11-03 17:01:36
+
+📈 <b>ОБЩАЯ СТАТИСТИКА:</b>
+👥 Всего пользователей: 3
+✅ Успешно отправлено: 3
+🚫 Заблокированных: 0
+❌ Ошибок: 0
+📊 Успешность: 100.0%
+
+🚫 <b>ЗАБЛОКИРОВАННЫЕ ПОЛЬЗОВАТЕЛИ:</b>
+Нет заблокированных пользователей
+
+❌ <b>ОШИБКИ ОТПРАВКИ:</b>
+Нет ошибок отправки
+
+2025-11-03 17:01:36,895 - __main__ - INFO - 📊 Отчет отправлен администратору 534740911
+2025-11-03 17:01:37,082 - __main__ - INFO - 📊 Отчет отправлен администратору 44054166
+2025-11-03 17:01:37,278 - __main__ - INFO - 📊 Отчет отправлен администратору 6995044681
+2025-11-03 17:01:37,409 - asyncio - ERROR - Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x7ff1b33ee620>
+2025-11-03 17:01:37,409 - asyncio - ERROR - Unclosed connector
+connections: ['deque([(<aiohttp.client_proto.ResponseHandler object at 0x7ff1b3427160>, 16574834.452980144)])']
+connector: <aiohttp.connector.TCPConnector object at 0x7ff1b33ee500>

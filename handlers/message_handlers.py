@@ -42,26 +42,42 @@ message_router = Router()
 # Бот НЕ контролирует общение - участницы могут свободно общаться
 # Бот молча обновляет счётчик активности в БД (без сообщений)
 
-@message_router.message(F.chat.id == CLUB_GROUP_ID)
+@message_router.message(F.chat.type.in_({"group", "supergroup"}))
 async def handle_group_message(message: types.Message):
     """
     Обработчик сообщений из группы для отслеживания активности пользователей.
     Молча обновляет активность без вмешательства в общение.
     """
     try:
+        logger.info(f"📨 Сообщение в чате {message.chat.id} (тип: {message.chat.type}) от {message.from_user.id} (@{message.from_user.username})")
+        
+        # Проверяем что это нужная группа
+        if message.chat.id != CLUB_GROUP_ID:
+            logger.info(f"⏭️ Пропущено - другая группа (нужна {CLUB_GROUP_ID}, получена {message.chat.id})")
+            return
+        
         # Пропускаем сообщения от ботов
         if message.from_user.is_bot:
+            logger.info(f"⏭️ Пропущено - это бот")
             return
         
         # Обновляем активность пользователя в БД
         async with AsyncSessionLocal() as session:
             user = await get_user_by_telegram_id(session, message.from_user.id)
             if user:
+                # Синхронизируем username если изменился
+                if user.username != message.from_user.username:
+                    user.username = message.from_user.username
+                    logger.info(f"🔄 Обновлён username: @{message.from_user.username}")
+                
+                # Обновляем активность
                 await update_group_activity(session, user.id)
                 await session.commit()
-                logger.debug(f"Обновлена активность пользователя {user.id} в группе")
+                logger.info(f"✅ Обновлена активность пользователя {user.id} (@{user.username}) в группе")
+            else:
+                logger.warning(f"⚠️ Пользователь {message.from_user.id} (@{message.from_user.username}) не найден в БД")
     except Exception as e:
-        logger.error(f"Ошибка при обновлении активности в группе: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при обновлении активности в группе: {e}", exc_info=True)
 
 
 # Состояния для FSM (конечного автомата)

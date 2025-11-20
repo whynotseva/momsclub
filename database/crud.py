@@ -3766,6 +3766,38 @@ async def update_group_activity(db: AsyncSession, user_id: int) -> GroupActivity
     return activity
 
 
+async def update_group_activity_log(db: AsyncSession, user_id: int) -> None:
+    """
+    Обновляет детальный лог активности пользователя в группе за текущий день.
+    Создаёт новую запись если её нет, или увеличивает счётчик если запись есть.
+    """
+    from database.models import GroupActivityLog
+    from sqlalchemy import select
+    
+    today = datetime.now().date()
+    
+    # Ищем запись за сегодня
+    query = select(GroupActivityLog).where(
+        GroupActivityLog.user_id == user_id,
+        GroupActivityLog.date == today
+    )
+    result = await db.execute(query)
+    log_entry = result.scalar_one_or_none()
+    
+    if log_entry:
+        # Обновляем существующую запись
+        log_entry.message_count += 1
+        log_entry.updated_at = datetime.now()
+    else:
+        # Создаём новую запись за сегодня
+        log_entry = GroupActivityLog(
+            user_id=user_id,
+            date=today,
+            message_count=1
+        )
+        db.add(log_entry)
+
+
 async def get_top_active_users(db: AsyncSession, limit: int = 20, page: int = 0) -> Tuple[List[Tuple[User, GroupActivity]], int]:
     """
     Получает топ активных пользователей в группе (по количеству сообщений)

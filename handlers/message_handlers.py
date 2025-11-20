@@ -70,8 +70,13 @@ async def handle_group_message(message: types.Message):
                     user.username = message.from_user.username
                     logger.info(f"🔄 Обновлён username: @{message.from_user.username}")
                 
-                # Обновляем активность
+                # Обновляем общую активность
                 await update_group_activity(session, user.id)
+                
+                # Обновляем детальный лог активности по дням
+                from database.crud import update_group_activity_log
+                await update_group_activity_log(session, user.id)
+                
                 await session.commit()
                 logger.info(f"✅ Обновлена активность пользователя {user.id} (@{user.username}) в группе")
             else:

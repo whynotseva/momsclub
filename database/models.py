@@ -328,3 +328,26 @@ class GroupActivity(Base):
     
     def __repr__(self):
         return f"<GroupActivity user_id={self.user_id} messages={self.message_count}>"
+
+
+class GroupActivityLog(Base):
+    """Модель для детального логирования активности пользователей в группе по дням"""
+    __tablename__ = "group_activity_log"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    date = Column(Date, nullable=False)  # Дата (без времени)
+    message_count = Column(Integer, default=0)  # Количество сообщений за этот день
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Уникальность: один пользователь - одна запись на день
+    __table_args__ = (
+        UniqueConstraint('user_id', 'date', name='unique_user_date'),
+    )
+    
+    # Отношение к пользователю
+    user = relationship("User")
+    
+    def __repr__(self):
+        return f"<GroupActivityLog user_id={self.user_id} date={self.date} messages={self.message_count}>"

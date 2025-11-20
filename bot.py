@@ -537,6 +537,74 @@ async def loyalty_nightly_job():
                 loyalty_logger.info("=" * 80)
                 loyalty_logger.info("")
                 
+                # ========== ОТПРАВКА ОТЧЁТА АДМИНАМ ==========
+                try:
+                    # Формируем красивый отчёт
+                    report_text = (
+                        f"📊 <b>Отчёт о проверке лояльности</b>\n"
+                        f"🕐 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')} МСК\n"
+                        f"{'─' * 30}\n\n"
+                        f"👥 <b>Пользователей проверено:</b> {stats['total']}\n"
+                        f"✅ С активной подпиской: {stats['with_active_sub']}\n"
+                        f"❌ Без подписки: {stats['without_active_sub']}\n\n"
+                        f"📈 <b>Распределение по уровням:</b>\n"
+                        f"   • None: {stats['by_level']['none']}\n"
+                        f"   • 🥈 Silver: {stats['by_level']['silver']}\n"
+                        f"   • 🥇 Gold: {stats['by_level']['gold']}\n"
+                        f"   • 💎 Platinum: {stats['by_level']['platinum']}\n\n"
+                    )
+                    
+                    # Добавляем информацию о повышениях
+                    if stats['upgraded'] > 0:
+                        report_text += (
+                            f"⬆️ <b>Повышено уровней:</b> {stats['upgraded']} 🎉\n"
+                        )
+                    else:
+                        report_text += f"⬆️ Повышений уровней: нет\n"
+                    
+                    # Добавляем информацию о pending rewards
+                    if stats['pending_notified'] > 0:
+                        report_text += (
+                            f"🎁 Отправлено push (выбор бонуса): {stats['pending_notified']}\n"
+                        )
+                    
+                    if stats['pending_skipped_no_sub'] > 0:
+                        report_text += (
+                            f"⏭️ Пропущено push (нет подписки): {stats['pending_skipped_no_sub']}\n"
+                        )
+                    
+                    # Ошибки
+                    if stats['errors'] > 0:
+                        report_text += f"\n⚠️ <b>Ошибок:</b> {stats['errors']} (см. логи)\n"
+                    else:
+                        report_text += f"\n✅ <b>Ошибок:</b> нет\n"
+                    
+                    report_text += f"\n{'─' * 30}\n✅ <b>Проверка завершена успешно</b>"
+                    
+                    # Отправляем отчёт всем админам
+                    from utils.constants import ADMIN_IDS
+                    if ADMIN_IDS:
+                        for admin_id in ADMIN_IDS:
+                            try:
+                                await bot.send_message(
+                                    admin_id,
+                                    report_text,
+                                    parse_mode="HTML"
+                                )
+                                loyalty_logger.info(f"✅ Отчёт о лояльности отправлен админу {admin_id}")
+                            except Exception as send_error:
+                                loyalty_logger.error(
+                                    f"❌ Ошибка отправки отчёта админу {admin_id}: {send_error}"
+                                )
+                    else:
+                        loyalty_logger.warning("⚠️ ADMIN_IDS не настроены, отчёт не отправлен")
+                        
+                except Exception as report_error:
+                    loyalty_logger.error(
+                        f"❌ Ошибка при формировании/отправке отчёта админам: {report_error}",
+                        exc_info=True
+                    )
+                
                 # ========== ЕЖЕНЕДЕЛЬНЫЕ НАПОМИНАНИЯ (каждый понедельник) ==========
                 if is_monday:
                     loyalty_logger.info("=" * 80)

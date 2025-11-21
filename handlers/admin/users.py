@@ -1881,16 +1881,6 @@ async def show_subscription_menu(callback: CallbackQuery):
                 text="🔑 Выдать подписку",
                 callback_data=f"admin_grant:{telegram_id}"
             )],
-            [
-                InlineKeyboardButton(
-                    text="➕ Добавить 30 дней",
-                    callback_data=f"admin_add_days:{telegram_id}:30"
-                ),
-                InlineKeyboardButton(
-                    text="➖ Убрать 30 дней",
-                    callback_data=f"admin_reduce_days:{telegram_id}:30"
-                ),
-            ],
             [InlineKeyboardButton(
                 text=("🛑 Выключить автопродление" if is_recurring else "🔄 Включить автопродление"),
                 callback_data=(f"admin_disable_autorenew:{telegram_id}" if is_recurring else f"admin_enable_autorenew:{telegram_id}")

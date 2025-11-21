@@ -96,8 +96,10 @@ async def show_user_finance(callback: CallbackQuery):
                 await callback.answer("❌ Доступ запрещён", show_alert=True)
                 return
             
-            # Получаем ID пользователя
-            telegram_id = int(callback.data.split(":")[1])
+            # Получаем ID пользователя и источник
+            parts = callback.data.split(":")
+            telegram_id = int(parts[1])
+            source = parts[2] if len(parts) > 2 else None
             
             # Получаем пользователя
             user = await get_user_by_telegram_id(session, telegram_id)
@@ -117,7 +119,12 @@ async def show_user_finance(callback: CallbackQuery):
             text += f"{'─' * 30}\n\n"
             
             if stats['payment_count'] == 0:
-                text += "📭 <i>Платежей пока нет</i>\n"
+                text += "📭 <i>Платежей пока нет</i>\n\n"
+                # Статус автопродления даже если нет платежей
+                if stats['is_recurring_active']:
+                    text += f"🔄 <b>Автопродление:</b> Включено ✅\n"
+                else:
+                    text += f"🔄 <b>Автопродление:</b> Выключено ❌\n"
             else:
                 # Стаж и дата регистрации
                 if stats['first_payment_date']:
@@ -149,11 +156,21 @@ async def show_user_finance(callback: CallbackQuery):
                 else:
                     text += f"🔄 <b>Автопродление:</b> Выключено ❌\n"
             
-            # Кнопка назад
+            # Кнопка назад - зависит от источника
+            if source == "sub_menu":
+                back_text = "« Назад к управлению подпиской"
+                back_callback = f"admin_subscription_menu:{telegram_id}"
+            elif source == "analytics_menu":
+                back_text = "« Назад к аналитике"
+                back_callback = f"admin_analytics_menu:{telegram_id}"
+            else:
+                back_text = "« Назад к пользователю"
+                back_callback = f"admin_user_info:{telegram_id}"
+            
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
-                    text="« Назад к пользователю",
-                    callback_data=f"admin_user_info:{telegram_id}"
+                    text=back_text,
+                    callback_data=back_callback
                 )]
             ])
             

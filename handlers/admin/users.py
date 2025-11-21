@@ -1730,7 +1730,10 @@ async def process_payment_history(callback: CallbackQuery):
             return
         
         try:
-            telegram_id = int(callback.data.split(":")[1])
+            # Получаем ID и источник
+            parts = callback.data.split(":")
+            telegram_id = int(parts[1])
+            source = parts[2] if len(parts) > 2 else None
             
             # Получаем пользователя
             user = await get_user_by_telegram_id(session, telegram_id)
@@ -1826,10 +1829,18 @@ async def process_payment_history(callback: CallbackQuery):
                 if len(text) > 3900:
                     text = text[:3900] + "\n\n<i>... показаны последние платежи</i>"
             
+            # Кнопка назад - зависит от источника
+            if source == "sub_menu":
+                back_text = "« Назад к управлению подпиской"
+                back_callback = f"admin_subscription_menu:{telegram_id}"
+            else:
+                back_text = "« Назад к пользователю"
+                back_callback = f"admin_user_info:{telegram_id}"
+            
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
-                    text="« Назад к пользователю",
-                    callback_data=f"admin_user_info:{telegram_id}"
+                    text=back_text,
+                    callback_data=back_callback
                 )]
             ])
             
@@ -1856,33 +1867,42 @@ async def show_subscription_menu(callback: CallbackQuery):
     try:
         telegram_id = int(callback.data.split(":")[1])
         
+        # Получаем пользователя для проверки автопродления
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            is_recurring = getattr(user, "is_recurring_active", False)
+        
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="🔑 Выдать подписку",
-                callback_data=f"admin_grant_subscription:{telegram_id}"
+                callback_data=f"admin_grant:{telegram_id}"
             )],
             [
                 InlineKeyboardButton(
                     text="➕ Добавить 30 дней",
-                    callback_data=f"admin_extend_subscription:{telegram_id}"
+                    callback_data=f"admin_add_days:{telegram_id}:30"
                 ),
                 InlineKeyboardButton(
                     text="➖ Убрать 30 дней",
-                    callback_data=f"admin_reduce_subscription:{telegram_id}"
+                    callback_data=f"admin_reduce_days:{telegram_id}:30"
                 ),
             ],
             [InlineKeyboardButton(
-                text="🔄 Включить автопродление",
-                callback_data=f"admin_enable_autorenewal:{telegram_id}"
+                text=("🛑 Выключить автопродление" if is_recurring else "🔄 Включить автопродление"),
+                callback_data=(f"admin_disable_autorenew:{telegram_id}" if is_recurring else f"admin_enable_autorenew:{telegram_id}")
             )],
             [
                 InlineKeyboardButton(
                     text="💳 История платежей",
-                    callback_data=f"admin_payment_history:{telegram_id}"
+                    callback_data=f"admin_payment_history:{telegram_id}:sub_menu"
                 ),
                 InlineKeyboardButton(
                     text="💰 Финансы",
-                    callback_data=f"admin_user_finance:{telegram_id}"
+                    callback_data=f"admin_user_finance:{telegram_id}:sub_menu"
                 ),
             ],
             [InlineKeyboardButton(
@@ -1911,21 +1931,21 @@ async def show_loyalty_menu(callback: CallbackQuery):
             [
                 InlineKeyboardButton(
                     text="🎯 Изменить уровень",
-                    callback_data=f"admin_change_loyalty_level:{telegram_id}"
+                    callback_data=f"admin_loyalty_set_level_from_user:{telegram_id}"
                 ),
                 InlineKeyboardButton(
                     text="🎁 Выдать бонус",
-                    callback_data=f"admin_loyalty_grant_from_user:{telegram_id}"
+                    callback_data=f"admin_loyalty_grant_from_user:{telegram_id}:loy_menu"
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="🏆 Выдать достижение",
-                    callback_data=f"admin_grant_badge:{telegram_id}"
+                    callback_data=f"admin_grant_badge:{telegram_id}:loy_menu"
                 ),
                 InlineKeyboardButton(
                     text="🗑️ Убрать достижение",
-                    callback_data=f"admin_revoke_badge:{telegram_id}"
+                    callback_data=f"admin_revoke_badge:{telegram_id}:loy_menu"
                 ),
             ],
             [InlineKeyboardButton(
@@ -1953,15 +1973,15 @@ async def show_analytics_menu(callback: CallbackQuery):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="💰 Финансовая статистика",
-                callback_data=f"admin_user_finance:{telegram_id}"
+                callback_data=f"admin_user_finance:{telegram_id}:analytics_menu"
             )],
             [InlineKeyboardButton(
                 text="📊 Активность в группе",
-                callback_data=f"admin_user_activity:{telegram_id}"
+                callback_data=f"admin_user_activity:{telegram_id}:analytics_menu"
             )],
             [InlineKeyboardButton(
                 text="🔮 Прогноз поведения",
-                callback_data=f"admin_user_prediction:{telegram_id}"
+                callback_data=f"admin_user_prediction:{telegram_id}:analytics_menu"
             )],
             [InlineKeyboardButton(
                 text="« Назад к пользователю",

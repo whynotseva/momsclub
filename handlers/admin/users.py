@@ -831,7 +831,7 @@ async def process_grant_specific(callback: CallbackQuery, state: FSMContext):
                 InlineKeyboardButton(text="✨ Пожизненно", callback_data="admin_lifetime"),
                 InlineKeyboardButton(text="🗓 Указать дату", callback_data="admin_set_date"),
             ],
-            [InlineKeyboardButton(text="« Отмена", callback_data="admin_cancel")],
+            [InlineKeyboardButton(text="« Отмена", callback_data=f"admin_subscription_menu:{user_id}")],
         ]
     )
 
@@ -903,8 +903,11 @@ async def process_set_date(callback: CallbackQuery, state: FSMContext):
             await callback.answer("У вас нет доступа к этой функции", show_alert=True)
             return
 
+    user_data = await state.get_data()
+    telegram_id = user_data.get("telegram_id")
+    
     await state.set_state(AdminStates.waiting_for_end_date)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« Отмена", callback_data="admin_cancel")]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« Отмена", callback_data=f"admin_subscription_menu:{telegram_id}")]])
     current_date = datetime.now().strftime("%d_%m_%Y")
     await callback.message.edit_text(
         "Введите дату окончания подписки в формате ДД_ММ_ГГГГ\n"
@@ -1862,9 +1865,12 @@ async def process_payment_history(callback: CallbackQuery):
 # ========================================
 
 @users_router.callback_query(F.data.startswith("admin_subscription_menu:"))
-async def show_subscription_menu(callback: CallbackQuery):
+async def show_subscription_menu(callback: CallbackQuery, state: FSMContext):
     """Показывает меню управления подпиской"""
     try:
+        # Очищаем state если возвращаемся из диалога выдачи подписки
+        await state.clear()
+        
         telegram_id = int(callback.data.split(":")[1])
         
         # Получаем пользователя для проверки автопродления

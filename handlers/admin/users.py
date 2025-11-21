@@ -322,11 +322,11 @@ async def process_user_id(message: types.Message, state: FSMContext):
                     callback_data=f"admin_loyalty_menu:{user.telegram_id}"
                 )],
                 [InlineKeyboardButton(
-                    text="� Аналитика и статистика",
+                    text="📊 Аналитика и статистика",
                     callback_data=f"admin_analytics_menu:{user.telegram_id}"
                 )],
                 [InlineKeyboardButton(
-                    text="�️ Модерация",
+                    text="🛡️ Модерация",
                     callback_data=f"admin_moderation_menu:{user.telegram_id}"
                 )],
                 [InlineKeyboardButton(
@@ -507,7 +507,7 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
                 callback_data=f"admin_analytics_menu:{user.telegram_id}"
             )],
             [InlineKeyboardButton(
-                text="�️ Модерация",
+                text="🛡️ Модерация",
                 callback_data=f"admin_moderation_menu:{user.telegram_id}"
             )],
             [InlineKeyboardButton(

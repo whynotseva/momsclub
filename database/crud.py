@@ -582,8 +582,17 @@ async def deactivate_subscription(db: AsyncSession, subscription_id: int):
 
 # Функция для получения пользователя по username
 async def get_user_by_username(db: AsyncSession, username: str):
-    """Получает пользователя по username"""
-    query = select(User).where(User.username == username)
+    """
+    Получает пользователя по username.
+    Если найдено несколько пользователей с одинаковым username (дубликаты),
+    возвращает самого свежего (по updated_at).
+    """
+    query = (
+        select(User)
+        .where(User.username == username)
+        .order_by(User.updated_at.desc())  # Самый свежий первым
+        .limit(1)
+    )
     result = await db.execute(query)
     return result.scalar_one_or_none()
 

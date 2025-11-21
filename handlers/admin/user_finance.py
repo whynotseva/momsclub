@@ -53,15 +53,22 @@ async def calculate_user_finance_stats(session, user: User) -> dict:
             'tenure_days': 0
         }
     
-    # Подсчёт статистики
-    total_amount = sum(p.amount for p in payments)
-    payment_count = len(payments)
+    # Подсчёт статистики - только ПЛАТНЫЕ платежи (amount > 0)
+    paid_payments = [p for p in payments if p.amount > 0]
+    
+    total_amount = sum(p.amount for p in paid_payments)
+    payment_count = len(paid_payments)
     average_check = total_amount / payment_count if payment_count > 0 else 0
     
-    # Последний платёж
-    last_payment = payments[0]
-    last_payment_amount = last_payment.amount
-    last_payment_date = last_payment.created_at
+    # Последний ПЛАТНЫЙ платёж (не бесплатная выдача админом)
+    if paid_payments:
+        last_payment = paid_payments[0]
+        last_payment_amount = last_payment.amount
+        last_payment_date = last_payment.created_at
+    else:
+        # Если все платежи бесплатные (выданы админом)
+        last_payment_amount = 0
+        last_payment_date = None
     
     # Реальный стаж - используем calc_tenure_days (как в системе лояльности)
     # Это считает только дни АКТИВНЫХ подписок, без перерывов

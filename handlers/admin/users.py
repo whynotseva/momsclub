@@ -311,87 +311,29 @@ async def process_user_id(message: types.Message, state: FSMContext):
             
             user_info = "\n".join(user_info_lines)
 
-            # Кнопка автопродления
-            autorenew_btn = InlineKeyboardButton(
-                text=("🛑 Выключить автопродление" if getattr(user, "is_recurring_active", False) else "🔄 Включить автопродление"),
-                callback_data=(f"admin_disable_autorenew:{user.telegram_id}" if getattr(user, "is_recurring_active", False) else f"admin_enable_autorenew:{user.telegram_id}")
-            )
-
-            # Проверяем права текущего админа для отображения кнопок
-            async with AsyncSessionLocal() as session:
-                current_admin = await get_user_by_telegram_id(session, message.from_user.id)
-                can_manage = can_manage_admins(current_admin) if current_admin else False
-            
-            keyboard_buttons = [
-                    [InlineKeyboardButton(text="🎁 Выдать подписку", callback_data=f"admin_grant:{user.telegram_id}")],
-                    [
-                        InlineKeyboardButton(text="➕ Добавить 30 дней", callback_data=f"admin_add_days:{user.telegram_id}:30"),
-                        InlineKeyboardButton(text="➖ Убрать 30 дней", callback_data=f"admin_reduce_days:{user.telegram_id}:30"),
-                    ],
-                    [autorenew_btn],
-            ]
-            
-            # Кнопки лояльности - только для создательницы/разработчика
-            if can_manage:
-                keyboard_buttons.append([
-                        InlineKeyboardButton(
-                            text="⭐ Изменить уровень",
-                            callback_data=f"admin_loyalty_set_level_from_user:{user.telegram_id}",
-                        ),
-                        InlineKeyboardButton(
-                            text="🎁 Выдать бонус",
-                            callback_data=f"admin_loyalty_grant_from_user:{user.telegram_id}",
-                        ),
-                ])
-            
-            keyboard_buttons.append([
-                InlineKeyboardButton(
-                    text="🏆 Выдать достижение",
-                    callback_data=f"admin_grant_badge:{user.telegram_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🗑️ Убрать достижение",
-                    callback_data=f"admin_revoke_badge:{user.telegram_id}",
-                ),
+            # Новая структура: 4 раздела
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💼 Управление подпиской",
+                    callback_data=f"admin_subscription_menu:{user.telegram_id}"
+                )],
+                [InlineKeyboardButton(
+                    text="⭐ Лояльность и бонусы",
+                    callback_data=f"admin_loyalty_menu:{user.telegram_id}"
+                )],
+                [InlineKeyboardButton(
+                    text="� Аналитика и статистика",
+                    callback_data=f"admin_analytics_menu:{user.telegram_id}"
+                )],
+                [InlineKeyboardButton(
+                    text="�️ Модерация",
+                    callback_data=f"admin_moderation_menu:{user.telegram_id}"
+                )],
+                [InlineKeyboardButton(
+                    text="« Назад",
+                    callback_data="admin_back"
+                )]
             ])
-            
-            # Кнопки "История платежей" и "Финансы"
-            keyboard_buttons.append([
-                InlineKeyboardButton(
-                    text="💳 История платежей",
-                    callback_data=f"admin_payment_history:{user.telegram_id}",
-                ),
-                InlineKeyboardButton(
-                    text="💰 Финансы",
-                    callback_data=f"admin_user_finance:{user.telegram_id}",
-                ),
-            ])
-            
-            # Кнопка "Активность"
-            keyboard_buttons.append([
-                InlineKeyboardButton(
-                    text="📊 Активность в группе",
-                    callback_data=f"admin_user_activity:{user.telegram_id}",
-                ),
-            ])
-            
-            # Кнопка "Прогноз"
-            keyboard_buttons.append([
-                InlineKeyboardButton(
-                    text="🔮 Прогноз поведения",
-                    callback_data=f"admin_user_prediction:{user.telegram_id}",
-                ),
-            ])
-            
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=keyboard_buttons + [
-                    [InlineKeyboardButton(
-                        text=("🔓 Разблокировать пользователя" if getattr(user, "is_blocked", False) or not user.is_active else "🚫 Забанить пользователя"),
-                        callback_data=(f"admin_unban_user:{user.telegram_id}" if getattr(user, "is_blocked", False) or not user.is_active else f"admin_ban_user:{user.telegram_id}")
-                    )],
-                    [InlineKeyboardButton(text="« Назад", callback_data="admin_back")],
-                ]
-            )
 
             await message.answer(user_info, reply_markup=keyboard, parse_mode="HTML")
         else:
@@ -550,77 +492,24 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
         
         user_info = "\n".join(user_info_lines)
 
-        keyboard_btn = InlineKeyboardButton(text="🎁 Выдать подписку", callback_data=f"admin_grant:{user.telegram_id}")
-        ban_unban_btn = InlineKeyboardButton(
-            text=("🔓 Разблокировать пользователя" if getattr(user, "is_blocked", False) or not user.is_active else "🚫 Забанить пользователя"),
-            callback_data=(f"admin_unban_user:{user.telegram_id}" if getattr(user, "is_blocked", False) or not user.is_active else f"admin_ban_user:{user.telegram_id}")
-        )
-        
-        # Проверяем права текущего админа для отображения кнопок
-        current_admin = await get_user_by_telegram_id(session, callback.from_user.id)
-        can_manage = can_manage_admins(current_admin) if current_admin else False
-        
+        # Новая структура: 4 раздела
         keyboard_buttons = [
-                [keyboard_btn],
-                [
-                    InlineKeyboardButton(text="➕ Добавить 30 дней", callback_data=f"admin_add_days:{user.telegram_id}:30"),
-                    InlineKeyboardButton(text="➖ Убрать 30 дней", callback_data=f"admin_reduce_days:{user.telegram_id}:30"),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=("🛑 Выключить автопродление" if getattr(user, "is_recurring_active", False) else "🔄 Включить автопродление"),
-                        callback_data=(f"admin_disable_autorenew:{user.telegram_id}" if getattr(user, "is_recurring_active", False) else f"admin_enable_autorenew:{user.telegram_id}")
-                    )
-                ],
-        ]
-        
-        # Кнопки лояльности - только для создательницы/разработчика
-        if can_manage:
-            keyboard_buttons.append([
-                    InlineKeyboardButton(
-                        text="⭐ Изменить уровень",
-                        callback_data=f"admin_loyalty_set_level_from_user:{user.telegram_id}",
-                    ),
-                    InlineKeyboardButton(
-                        text="🎁 Выдать бонус",
-                        callback_data=f"admin_loyalty_grant_from_user:{user.telegram_id}",
-                    ),
-            ])
-        
-        keyboard_buttons.extend([
-            [
-                InlineKeyboardButton(
-                    text="🏆 Выдать достижение",
-                    callback_data=f"admin_grant_badge:{user.telegram_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🗑️ Убрать достижение",
-                    callback_data=f"admin_revoke_badge:{user.telegram_id}",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="💳 История платежей",
-                        callback_data=f"admin_payment_history:{user.telegram_id}",
-                    ),
-                    InlineKeyboardButton(
-                        text="💰 Финансы",
-                        callback_data=f"admin_user_finance:{user.telegram_id}",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="📊 Активность в группе",
-                        callback_data=f"admin_user_activity:{user.telegram_id}",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔮 Прогноз поведения",
-                        callback_data=f"admin_user_prediction:{user.telegram_id}",
-                    ),
-                ],
-                [ban_unban_btn],
+            [InlineKeyboardButton(
+                text="💼 Управление подпиской",
+                callback_data=f"admin_subscription_menu:{user.telegram_id}"
+            )],
+            [InlineKeyboardButton(
+                text="⭐ Лояльность и бонусы",
+                callback_data=f"admin_loyalty_menu:{user.telegram_id}"
+            )],
+            [InlineKeyboardButton(
+                text="📊 Аналитика и статистика",
+                callback_data=f"admin_analytics_menu:{user.telegram_id}"
+            )],
+            [InlineKeyboardButton(
+                text="�️ Модерация",
+                callback_data=f"admin_moderation_menu:{user.telegram_id}"
+            )],
             [InlineKeyboardButton(
                 text="« Назад", 
                 callback_data=(
@@ -629,8 +518,8 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
                     else f"admin_inactive_users:{return_to_inactive_days}:{return_to_inactive_page}" if return_to_inactive_days is not None
                     else "admin_back"
                 )
-            )],
-        ])
+            )]
+        ]
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
@@ -1955,6 +1844,175 @@ async def process_payment_history(callback: CallbackQuery):
             await callback.answer("❌ Ошибка при загрузке истории платежей", show_alert=True)
     
     await callback.answer()
+
+
+# ========================================
+# ОБРАБОТЧИКИ РАЗДЕЛОВ МЕНЮ
+# ========================================
+
+@users_router.callback_query(F.data.startswith("admin_subscription_menu:"))
+async def show_subscription_menu(callback: CallbackQuery):
+    """Показывает меню управления подпиской"""
+    try:
+        telegram_id = int(callback.data.split(":")[1])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🔑 Выдать подписку",
+                callback_data=f"admin_grant_subscription:{telegram_id}"
+            )],
+            [
+                InlineKeyboardButton(
+                    text="➕ Добавить 30 дней",
+                    callback_data=f"admin_extend_subscription:{telegram_id}"
+                ),
+                InlineKeyboardButton(
+                    text="➖ Убрать 30 дней",
+                    callback_data=f"admin_reduce_subscription:{telegram_id}"
+                ),
+            ],
+            [InlineKeyboardButton(
+                text="🔄 Включить автопродление",
+                callback_data=f"admin_enable_autorenewal:{telegram_id}"
+            )],
+            [
+                InlineKeyboardButton(
+                    text="💳 История платежей",
+                    callback_data=f"admin_payment_history:{telegram_id}"
+                ),
+                InlineKeyboardButton(
+                    text="💰 Финансы",
+                    callback_data=f"admin_user_finance:{telegram_id}"
+                ),
+            ],
+            [InlineKeyboardButton(
+                text="« Назад к пользователю",
+                callback_data=f"admin_user_info:{telegram_id}"
+            )]
+        ])
+        
+        text = "💼 <b>Управление подпиской</b>\n\nВыберите действие:"
+        
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в show_subscription_menu: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при открытии меню", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_loyalty_menu:"))
+async def show_loyalty_menu(callback: CallbackQuery):
+    """Показывает меню лояльности и достижений"""
+    try:
+        telegram_id = int(callback.data.split(":")[1])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🎯 Изменить уровень",
+                    callback_data=f"admin_change_loyalty_level:{telegram_id}"
+                ),
+                InlineKeyboardButton(
+                    text="🎁 Выдать бонус",
+                    callback_data=f"admin_loyalty_grant_from_user:{telegram_id}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏆 Выдать достижение",
+                    callback_data=f"admin_grant_badge:{telegram_id}"
+                ),
+                InlineKeyboardButton(
+                    text="🗑️ Убрать достижение",
+                    callback_data=f"admin_revoke_badge:{telegram_id}"
+                ),
+            ],
+            [InlineKeyboardButton(
+                text="« Назад к пользователю",
+                callback_data=f"admin_user_info:{telegram_id}"
+            )]
+        ])
+        
+        text = "⭐ <b>Лояльность и бонусы</b>\n\nВыберите действие:"
+        
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в show_loyalty_menu: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при открытии меню", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_analytics_menu:"))
+async def show_analytics_menu(callback: CallbackQuery):
+    """Показывает меню аналитики и статистики"""
+    try:
+        telegram_id = int(callback.data.split(":")[1])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="💰 Финансовая статистика",
+                callback_data=f"admin_user_finance:{telegram_id}"
+            )],
+            [InlineKeyboardButton(
+                text="📊 Активность в группе",
+                callback_data=f"admin_user_activity:{telegram_id}"
+            )],
+            [InlineKeyboardButton(
+                text="🔮 Прогноз поведения",
+                callback_data=f"admin_user_prediction:{telegram_id}"
+            )],
+            [InlineKeyboardButton(
+                text="« Назад к пользователю",
+                callback_data=f"admin_user_info:{telegram_id}"
+            )]
+        ])
+        
+        text = "📊 <b>Аналитика и статистика</b>\n\nВыберите раздел:"
+        
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в show_analytics_menu: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при открытии меню", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_moderation_menu:"))
+async def show_moderation_menu(callback: CallbackQuery):
+    """Показывает меню модерации"""
+    try:
+        telegram_id = int(callback.data.split(":")[1])
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            is_banned = getattr(user, "is_blocked", False) or not user.is_active
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=("🔓 Разблокировать пользователя" if is_banned else "🚫 Забанить пользователя"),
+                    callback_data=(f"admin_unban_user:{telegram_id}" if is_banned else f"admin_ban_user:{telegram_id}")
+                )],
+                [InlineKeyboardButton(
+                    text="« Назад к пользователю",
+                    callback_data=f"admin_user_info:{telegram_id}"
+                )]
+            ])
+            
+            status = "🔴 Заблокирован" if is_banned else "🟢 Активен"
+            text = f"🛡️ <b>Модерация</b>\n\nТекущий статус: {status}\n\nВыберите действие:"
+            
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в show_moderation_menu: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при открытии меню", show_alert=True)
 
 
 def register_admin_users_handlers(dp):

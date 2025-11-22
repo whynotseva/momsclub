@@ -543,7 +543,7 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
             )])
         else:
             keyboard_buttons.append([InlineKeyboardButton(
-                text="☆ Добавить в избранное",
+                text="➕ Добавить в избранное",
                 callback_data=f"admin_toggle_favorite:{user.telegram_id}"
             )])
         

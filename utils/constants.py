@@ -46,6 +46,17 @@ WELCOME_IMAGE_PATH = os.path.join("media", "mainbaner.png")
 # Количество дней, которые начисляются участникам реферальной программы
 REFERRAL_BONUS_DAYS = 7
 
+# Реферальная система 2.0 - проценты денежных наград по уровням лояльности
+REFERRAL_MONEY_PERCENT = {
+    'none': 10,      # 10% для обычных пользователей
+    'silver': 15,    # 15% для Silver
+    'gold': 20,      # 20% для Gold
+    'platinum': 20   # 20% для Platinum
+}
+
+# Минимальная сумма для вывода реферальных средств
+MIN_WITHDRAWAL_AMOUNT = 500  # 500₽
+
 # Конфигурация персональных промокодов для возврата пользователей
 RETURN_PROMO_CONFIG = {
     'none': {

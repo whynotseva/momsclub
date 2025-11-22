@@ -252,8 +252,47 @@ async def open_sub_bio(callback: CallbackQuery):
 
 
 @subscriptions_router.callback_query(F.data.startswith("sub_add:"))
-async def add_subscription_days(callback: CallbackQuery):
-    """Добавляет дни к подписке"""
+async def confirm_add_subscription_days(callback: CallbackQuery):
+    """Запрашивает подтверждение добавления дней к подписке"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        days = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            user_name = user.first_name or "Пользователь"
+            if user.username:
+                user_name += f" (@{user.username})"
+        
+        text = (
+            f"⚠️ <b>Подтверждение</b>\n\n"
+            f"Добавить <b>{days} дней</b> к подписке?\n\n"
+            f"👤 {user_name}"
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, добавить", callback_data=f"sub_add_confirm:{telegram_id}:{days}:{page}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin_subscription_dates:{page}")
+            ]
+        ])
+        
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_add_subscription_days: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@subscriptions_router.callback_query(F.data.startswith("sub_add_confirm:"))
+async def add_subscription_days_confirmed(callback: CallbackQuery):
+    """Добавляет дни к подписке после подтверждения"""
     try:
         parts = callback.data.split(":")
         telegram_id = int(parts[1])
@@ -274,7 +313,7 @@ async def add_subscription_days(callback: CallbackQuery):
             callback.data = f"admin_subscription_dates:{page}"
             await process_subscription_dates(callback, None)
     except Exception as e:
-        logger.error(f"Ошибка в add_subscription_days: {e}", exc_info=True)
+        logger.error(f"Ошибка в add_subscription_days_confirmed: {e}", exc_info=True)
         await callback.answer("❌ Ошибка", show_alert=True)
 
 

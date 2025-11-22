@@ -4051,3 +4051,360 @@ async def get_admin_favorites(db: AsyncSession, admin_telegram_id: int, limit: i
     
     return [(user, favorite) for user, favorite in favorites_with_users], total_count
 
+
+# =============================================================================
+# РЕФЕРАЛЬНАЯ СИСТЕМА 2.0 - CRUD ФУНКЦИИ
+# =============================================================================
+
+async def add_referral_balance(session: AsyncSession, user_id: int, amount: int) -> bool:
+    """
+    Добавляет средства на реферальный баланс пользователя
+    
+    Args:
+        session: Сессия БД
+        user_id: ID пользователя
+        amount: Сумма для начисления в рублях
+        
+    Returns:
+        True если успешно, False при ошибке
+    """
+    try:
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"[referral] Пользователь {user_id} не найден")
+            return False
+        
+        query = (
+            update(User)
+            .where(User.id == user_id)
+            .values(
+                referral_balance=User.referral_balance + amount,
+                total_earned_referral=User.total_earned_referral + amount
+            )
+        )
+        await session.execute(query)
+        await session.commit()
+        
+        logger.info(f"[referral] Начислено {amount}₽ на баланс пользователя {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[referral] Ошибка при начислении баланса: {e}")
+        await session.rollback()
+        return False
+
+
+async def deduct_referral_balance(session: AsyncSession, user_id: int, amount: int) -> bool:
+    """
+    Списывает средства с реферального баланса пользователя
+    
+    Args:
+        session: Сессия БД
+        user_id: ID пользователя
+        amount: Сумма для списания в рублях
+        
+    Returns:
+        True если успешно, False при ошибке или недостатке средств
+    """
+    try:
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"[referral] Пользователь {user_id} не найден")
+            return False
+        
+        if user.referral_balance < amount:
+            logger.error(f"[referral] Недостаточно средств на балансе пользователя {user_id}")
+            return False
+        
+        query = (
+            update(User)
+            .where(User.id == user_id)
+            .values(referral_balance=User.referral_balance - amount)
+        )
+        await session.execute(query)
+        await session.commit()
+        
+        logger.info(f"[referral] Списано {amount}₽ с баланса пользователя {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[referral] Ошибка при списании баланса: {e}")
+        await session.rollback()
+        return False
+
+
+async def create_referral_reward(
+    session: AsyncSession,
+    referrer_id: int,
+    referee_id: int,
+    payment_amount: int,
+    reward_type: str,
+    reward_amount: int,
+    loyalty_level: str,
+    bonus_percent: int
+) -> bool:
+    """
+    Создает запись о реферальной награде
+    
+    Args:
+        session: Сессия БД
+        referrer_id: ID реферера (кто получил награду)
+        referee_id: ID реферала (кто оплатил)
+        payment_amount: Сумма покупки реферала
+        reward_type: Тип награды ('money' или 'days')
+        reward_amount: Размер награды (рубли или дни)
+        loyalty_level: Уровень лояльности реферера
+        bonus_percent: Процент бонуса
+        
+    Returns:
+        True если успешно, False при ошибке
+    """
+    try:
+        from database.models import ReferralReward
+        
+        reward = ReferralReward(
+            referrer_id=referrer_id,
+            referee_id=referee_id,
+            payment_amount=payment_amount,
+            reward_type=reward_type,
+            reward_amount=reward_amount,
+            loyalty_level=loyalty_level,
+            bonus_percent=bonus_percent
+        )
+        
+        session.add(reward)
+        
+        # Увеличиваем счетчик оплативших рефералов
+        query = (
+            update(User)
+            .where(User.id == referrer_id)
+            .values(total_referrals_paid=User.total_referrals_paid + 1)
+        )
+        await session.execute(query)
+        
+        await session.commit()
+        
+        logger.info(f"[referral] Создана запись награды: реферер={referrer_id}, тип={reward_type}, сумма={reward_amount}")
+        return True
+    except Exception as e:
+        logger.error(f"[referral] Ошибка при создании записи награды: {e}")
+        await session.rollback()
+        return False
+
+
+async def get_referral_rewards(session: AsyncSession, user_id: int, limit: int = 10):
+    """
+    Получает историю реферальных наград пользователя
+    
+    Args:
+        session: Сессия БД
+        user_id: ID пользователя (реферера)
+        limit: Максимальное количество записей
+        
+    Returns:
+        List[Tuple[ReferralReward, User]]: Список кортежей (награда, реферал)
+    """
+    try:
+        from database.models import ReferralReward
+        
+        query = (
+            select(ReferralReward, User)
+            .join(User, ReferralReward.referee_id == User.id)
+            .where(ReferralReward.referrer_id == user_id)
+            .order_by(ReferralReward.created_at.desc())
+            .limit(limit)
+        )
+        
+        result = await session.execute(query)
+        rewards = result.all()
+        
+        return [(reward, user) for reward, user in rewards]
+    except Exception as e:
+        logger.error(f"[referral] Ошибка при получении истории наград: {e}")
+        return []
+
+
+async def is_eligible_for_money_reward(session: AsyncSession, user_id: int) -> bool:
+    """
+    Проверяет, может ли пользователь получать денежные награды
+    (админы и пользователи с бесконечной подпиской не могут)
+    
+    Args:
+        session: Сессия БД
+        user_id: ID пользователя
+        
+    Returns:
+        True если может получать деньги, False если нет
+    """
+    try:
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            return False
+        
+        # Админы не получают деньги
+        if user.admin_group:
+            logger.info(f"[referral] Пользователь {user_id} - админ, денежные награды недоступны")
+            return False
+        
+        # Проверяем бесконечную подписку
+        subscription = await get_active_subscription(session, user.id)
+        if subscription:
+            from datetime import datetime
+            # Если подписка заканчивается после 2050 года - считаем бесконечной
+            if subscription.end_date.year > 2050:
+                logger.info(f"[referral] Пользователь {user_id} имеет бесконечную подписку, денежные награды недоступны")
+                return False
+        
+        return True
+    except Exception as e:
+        logger.error(f"[referral] Ошибка при проверке права на денежные награды: {e}")
+        return False
+
+
+async def create_withdrawal_request(
+    session: AsyncSession,
+    user_id: int,
+    amount: int,
+    payment_method: str,
+    payment_details: str
+) -> bool:
+    """
+    Создает заявку на вывод реферальных средств
+    
+    Args:
+        session: Сессия БД
+        user_id: ID пользователя
+        amount: Сумма вывода в рублях
+        payment_method: Способ вывода ('card' или 'sbp')
+        payment_details: Реквизиты (номер карты или телефона)
+        
+    Returns:
+        True если успешно, False при ошибке
+    """
+    try:
+        from database.models import WithdrawalRequest
+        
+        # Проверяем баланс
+        user = await get_user_by_id(session, user_id)
+        if not user or user.referral_balance < amount:
+            logger.error(f"[referral] Недостаточно средств для вывода")
+            return False
+        
+        # Проверяем минимальную сумму (из constants)
+        if amount < 500:
+            logger.error(f"[referral] Сумма вывода меньше минимальной (500₽)")
+            return False
+        
+        withdrawal = WithdrawalRequest(
+            user_id=user_id,
+            amount=amount,
+            payment_method=payment_method,
+            payment_details=payment_details,
+            status='pending'
+        )
+        
+        session.add(withdrawal)
+        await session.commit()
+        
+        logger.info(f"[referral] Создана заявка на вывод {amount}₽ для пользователя {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[referral] Ошибка при создании заявки на вывод: {e}")
+        await session.rollback()
+        return False
+
+
+async def get_withdrawal_requests(session: AsyncSession, status: str = None, limit: int = 50):
+    """
+    Получает заявки на вывод средств
+    
+    Args:
+        session: Сессия БД
+        status: Фильтр по статусу ('pending', 'approved', 'rejected') или None для всех
+        limit: Максимальное количество записей
+        
+    Returns:
+        List[Tuple[WithdrawalRequest, User]]: Список кортежей (заявка, пользователь)
+    """
+    try:
+        from database.models import WithdrawalRequest
+        
+        query = (
+            select(WithdrawalRequest, User)
+            .join(User, WithdrawalRequest.user_id == User.id)
+            .order_by(WithdrawalRequest.created_at.desc())
+        )
+        
+        if status:
+            query = query.where(WithdrawalRequest.status == status)
+        
+        query = query.limit(limit)
+        
+        result = await session.execute(query)
+        requests = result.all()
+        
+        return [(withdrawal, user) for withdrawal, user in requests]
+    except Exception as e:
+        logger.error(f"[referral] Ошибка при получении заявок на вывод: {e}")
+        return []
+
+
+async def process_withdrawal_request(
+    session: AsyncSession,
+    request_id: int,
+    admin_id: int,
+    new_status: str,
+    admin_comment: str = None
+) -> bool:
+    """
+    Обрабатывает заявку на вывод средств (одобрение/отклонение)
+    
+    Args:
+        session: Сессия БД
+        request_id: ID заявки
+        admin_id: ID админа, который обрабатывает
+        new_status: Новый статус ('approved' или 'rejected')
+        admin_comment: Комментарий админа (опционально)
+        
+    Returns:
+        True если успешно, False при ошибке
+    """
+    try:
+        from database.models import WithdrawalRequest
+        from datetime import datetime
+        
+        withdrawal = await session.get(WithdrawalRequest, request_id)
+        if not withdrawal:
+            logger.error(f"[referral] Заявка {request_id} не найдена")
+            return False
+        
+        if withdrawal.status != 'pending':
+            logger.error(f"[referral] Заявка {request_id} уже обработана")
+            return False
+        
+        # Если одобрено - списываем средства
+        if new_status == 'approved':
+            success = await deduct_referral_balance(session, withdrawal.user_id, withdrawal.amount)
+            if not success:
+                logger.error(f"[referral] Не удалось списать средства для заявки {request_id}")
+                return False
+        
+        # Обновляем статус заявки
+        query = (
+            update(WithdrawalRequest)
+            .where(WithdrawalRequest.id == request_id)
+            .values(
+                status=new_status,
+                processed_at=datetime.now(),
+                processed_by_admin_id=admin_id,
+                admin_comment=admin_comment
+            )
+        )
+        await session.execute(query)
+        await session.commit()
+        
+        logger.info(f"[referral] Заявка {request_id} обработана: {new_status}")
+        return True
+    except Exception as e:
+        logger.error(f"[referral] Ошибка при обработке заявки: {e}")
+        await session.rollback()
+        return False
+

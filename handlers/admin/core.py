@@ -130,7 +130,7 @@ async def process_admin_stats(callback: CallbackQuery):
                 elif delta < 0:
                     return f"🔴 ↘️ {delta}"
                 else:
-                    return "⚪ ═ 0"
+                    return "⚪ как вчера"
             
             new_users_trend = format_trend(new_users_today, new_users_yesterday)
             payments_trend = format_trend(payments_today, payments_yesterday)

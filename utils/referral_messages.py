@@ -210,14 +210,23 @@ def get_referral_program_text(
     motivation_text = ""
     if balance >= 500:
         motivation_text = f"\n🎉 <b>Поздравляем!</b> Вы можете вывести {balance:,}₽!\n"
-    elif balance > 0:
+    else:
+        # Показываем прогресс даже при нулевом балансе
         remaining = 500 - balance
         progress_percent = int((balance / 500) * 100)
         progress_bar = "█" * (progress_percent // 10) + "░" * (10 - (progress_percent // 10))
-        motivation_text = (
-            f"\n🎯 <b>До вывода осталось:</b> {remaining:,}₽\n"
-            f"📊 Прогресс: {progress_bar} {progress_percent}%\n"
-        )
+        
+        if balance == 0:
+            motivation_text = (
+                f"\n💡 <b>Начните зарабатывать!</b>\n"
+                f"🎯 До первого вывода: 500₽\n"
+                f"📊 Прогресс: {progress_bar} 0%\n"
+            )
+        else:
+            motivation_text = (
+                f"\n🎯 <b>До вывода осталось:</b> {remaining:,}₽\n"
+                f"📊 Прогресс: {progress_bar} {progress_percent}%\n"
+            )
     
     return (
         f"🤝 <b>Реферальная программа</b>\n\n"

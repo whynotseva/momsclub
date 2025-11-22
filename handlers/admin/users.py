@@ -11,15 +11,31 @@ from utils.constants import LIFETIME_THRESHOLD, LIFETIME_SUBSCRIPTION_GROUP
 from utils.helpers import is_lifetime_subscription
 
 def format_subscription_status(subscription) -> str:
-    """Форматирует статус подписки для отображения в админке"""
+    """Форматирует статус подписки для отображения в админке с визуальными индикаторами"""
     if not subscription:
         return "❌ Отсутствует или истекла"
     
     if is_lifetime_subscription(subscription):
-        return "∞ Пожизненная подписка"
+        return "♾️ ∞ Пожизненная подписка"
     
     days_left = (subscription.end_date - datetime.now()).days
-    return f"✅ Активна до {subscription.end_date.strftime('%d.%m.%Y')} (осталось дней: {days_left})"
+    date_formatted = subscription.end_date.strftime('%d.%m.%Y')
+    
+    # Визуальные индикаторы по срочности
+    if days_left <= 1:
+        status_emoji = "🔴"
+        status_text = "КРИТИЧНО"
+    elif days_left <= 3:
+        status_emoji = "🟠"
+        status_text = "СРОЧНО"
+    elif days_left <= 7:
+        status_emoji = "🟡"
+        status_text = "ВНИМАНИЕ"
+    else:
+        status_emoji = "🟢"
+        status_text = "НОРМА"
+    
+    return f"{status_emoji} Активна до {date_formatted} (осталось {days_left} дн. - {status_text})"
 
 from utils.constants import (
     ADMIN_IDS, 

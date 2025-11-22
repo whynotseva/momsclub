@@ -67,7 +67,12 @@ async def show_withdrawal_requests(callback: CallbackQuery):
                 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
             
-            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            try:
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except Exception:
+                # Если не получилось отредактировать (сообщение с картинкой)
+                await callback.message.delete()
+                await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
             
     except Exception as e:
         logger.error(f"Ошибка в show_withdrawal_requests: {e}", exc_info=True)
@@ -113,7 +118,12 @@ async def view_withdrawal_request(callback: CallbackQuery):
                 [InlineKeyboardButton(text="« Назад", callback_data="admin_withdrawals")]
             ])
             
-            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            try:
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except Exception:
+                # Если не получилось отредактировать (сообщение с картинкой)
+                await callback.message.delete()
+                await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
             
     except Exception as e:
         logger.error(f"Ошибка в view_withdrawal_request: {e}", exc_info=True)

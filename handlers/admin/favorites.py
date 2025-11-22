@@ -72,7 +72,16 @@ async def show_favorites_list(callback: CallbackQuery):
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="« Назад", callback_data="admin_back")]
                 ])
-                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+                
+                try:
+                    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+                except Exception:
+                    try:
+                        await callback.message.delete()
+                    except:
+                        pass
+                    await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+                
                 await callback.answer()
                 return
             
@@ -133,7 +142,17 @@ async def show_favorites_list(callback: CallbackQuery):
             )])
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            
+            try:
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except Exception as edit_error:
+                # Если не можем отредактировать (например, сообщение с картинкой), удаляем и отправляем новое
+                try:
+                    await callback.message.delete()
+                except:
+                    pass
+                await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+            
             await callback.answer()
             
     except Exception as e:

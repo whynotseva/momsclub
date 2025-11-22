@@ -2149,7 +2149,7 @@ async def toggle_favorite_handler(callback: CallbackQuery, state: FSMContext):
                 # Удаляем из избранного
                 success = await remove_from_favorites(session, callback.from_user.id, user_telegram_id)
                 if success:
-                    await callback.answer("❌ Удалено из избранного", show_alert=False)
+                    await callback.answer("✅ Удалено из избранного", show_alert=True)
                 else:
                     await callback.answer("❌ Ошибка при удалении", show_alert=True)
                     return
@@ -2197,7 +2197,7 @@ async def add_favorite_no_note(callback: CallbackQuery, state: FSMContext):
             result = await add_to_favorites(session, callback.from_user.id, user_telegram_id, note=None)
             
             if result:
-                await callback.answer("⭐ Добавлено в избранное", show_alert=False)
+                await callback.answer("✅ Добавлено в избранное", show_alert=True)
             else:
                 await callback.answer("⚠️ Уже в избранном", show_alert=True)
         

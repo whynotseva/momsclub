@@ -124,12 +124,15 @@ async def show_referral_history(callback: CallbackQuery):
             # Получаем историю наград
             rewards = await get_referral_rewards(session, user.id, limit=20)
             
-            text = f"📊 <b>История начислений</b>\n"
+            text = f"📊 <b>История реферальных наград</b>\n"
             text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
-            text += f"📱 ID: {telegram_id}\n\n"
+            text += f"📱 ID: {telegram_id}\n"
+            text += f"💰 Текущий баланс: {user.referral_balance or 0:,}₽\n\n"
+            
+            text += "ℹ️ <i>Показаны только награды от рефералов.\nРучные начисления админом отражаются в балансе.</i>\n\n"
             
             if not rewards:
-                text += "📋 Нет начислений"
+                text += "📋 Нет реферальных наград"
             else:
                 for reward in rewards:
                     referee = await get_user_by_id(session, reward.referee_id)
@@ -153,7 +156,12 @@ async def show_referral_history(callback: CallbackQuery):
                 )]
             ])
             
-            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            try:
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except Exception:
+                # Если не получилось отредактировать (сообщение с картинкой)
+                await callback.message.delete()
+                await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
             
     except Exception as e:
         logger.error(f"Ошибка в show_referral_history: {e}", exc_info=True)
@@ -182,12 +190,16 @@ async def start_add_money(callback: CallbackQuery, state: FSMContext):
             text = f"💰 <b>Начисление средств</b>\n\n"
             text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
             text += f"📱 ID: {telegram_id}\n"
-            text += f"💰 Текущий баланс: {user.referral_balance or 0}₽\n\n"
+            text += f"💰 Текущий баланс: {user.referral_balance or 0:,}₽\n\n"
             text += "Введите сумму для начисления (в рублях):\n"
             text += "Например: <code>1000</code>\n\n"
-            text += "Или /cancel для отмены"
+            text += "Или нажмите кнопку отмены"
             
-            await callback.message.edit_text(text, parse_mode="HTML")
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Отмена", callback_data="admin_ref_cancel")]
+            ])
+            
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
             await state.set_state(AdminReferralStates.waiting_amount)
             
     except Exception as e:

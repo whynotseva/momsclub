@@ -132,6 +132,14 @@ async def show_referral_history(callback: CallbackQuery):
             withdrawals_result = await session.execute(withdrawals_query)
             withdrawals = withdrawals_result.scalars().all()
             
+            # Получаем ручные начисления админов
+            from database.models import AdminBalanceAdjustment
+            adjustments_query = select(AdminBalanceAdjustment).where(
+                AdminBalanceAdjustment.user_id == user.id
+            ).order_by(AdminBalanceAdjustment.created_at.desc()).limit(20)
+            adjustments_result = await session.execute(adjustments_query)
+            adjustments = adjustments_result.scalars().all()
+            
             text = f"📊 <b>История операций</b>\n"
             text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
             text += f"📱 ID: {telegram_id}\n"
@@ -155,6 +163,14 @@ async def show_referral_history(callback: CallbackQuery):
                     'type': 'withdrawal',
                     'date': withdrawal.created_at,
                     'data': withdrawal
+                })
+            
+            # Добавляем ручные начисления админов
+            for adjustment in adjustments:
+                all_operations.append({
+                    'type': 'adjustment',
+                    'date': adjustment.created_at,
+                    'data': adjustment
                 })
             
             # Сортируем по дате (новые сверху)
@@ -186,6 +202,14 @@ async def show_referral_history(callback: CallbackQuery):
                         status_text = "Одобрено" if withdrawal.status == 'approved' else "Отклонено"
                         text += f"💸 <b>-{withdrawal.amount:,}₽</b> вывод {status_emoji}\n"
                         text += f"   {status_text} · {date_str}\n\n"
+                    
+                    elif op['type'] == 'adjustment':
+                        adjustment = op['data']
+                        admin_name = "админом"
+                        if adjustment.admin:
+                            admin_name = f"@{adjustment.admin.username}" if adjustment.admin.username else adjustment.admin.first_name
+                        text += f"🎁 <b>+{adjustment.amount:,}₽</b> начислено {admin_name}\n"
+                        text += f"   {date_str}\n\n"
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
@@ -329,6 +353,17 @@ async def confirm_add_money(callback: CallbackQuery, state: FSMContext):
             success = await add_referral_balance(session, target_user_id, amount)
             
             if success:
+                # Создаём запись о ручном начислении
+                from database.models import AdminBalanceAdjustment
+                adjustment = AdminBalanceAdjustment(
+                    user_id=target_user_id,
+                    admin_id=admin.id,
+                    amount=amount,
+                    comment=f"Ручное начисление админом {admin.username or admin.first_name}"
+                )
+                session.add(adjustment)
+                await session.commit()
+                
                 await session.refresh(user)
                 
                 # Уведомляем пользователя

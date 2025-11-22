@@ -421,3 +421,22 @@ class WithdrawalRequest(Base):
     
     def __repr__(self):
         return f"<WithdrawalRequest {self.id} user={self.user_id} amount={self.amount}>"
+
+
+class AdminBalanceAdjustment(Base):
+    """Модель ручных начислений/списаний баланса админом"""
+    __tablename__ = "admin_balance_adjustments"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    admin_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # Кто сделал
+    amount = Column(Integer, nullable=False)  # Сумма (положительная для начисления, отрицательная для списания)
+    comment = Column(Text, nullable=True)  # Комментарий админа
+    created_at = Column(DateTime, server_default=func.now())
+    
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id], backref="balance_adjustments")
+    admin = relationship("User", foreign_keys=[admin_id])
+    
+    def __repr__(self):
+        return f"<AdminBalanceAdjustment {self.id} user={self.user_id} amount={self.amount}>"

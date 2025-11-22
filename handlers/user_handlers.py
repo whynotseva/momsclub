@@ -4697,7 +4697,7 @@ async def process_referral_history(callback: types.CallbackQuery):
             rewards = await get_referral_rewards(session, user.id, limit=20)
             
             # Получаем историю выводов
-            from database.models import WithdrawalRequest
+            from database.models import WithdrawalRequest, AdminBalanceAdjustment
             from sqlalchemy import select
             withdrawals_query = select(WithdrawalRequest).where(
                 WithdrawalRequest.user_id == user.id,
@@ -4705,6 +4705,13 @@ async def process_referral_history(callback: types.CallbackQuery):
             ).order_by(WithdrawalRequest.created_at.desc()).limit(20)
             withdrawals_result = await session.execute(withdrawals_query)
             withdrawals = withdrawals_result.scalars().all()
+            
+            # Получаем ручные начисления админов
+            adjustments_query = select(AdminBalanceAdjustment).where(
+                AdminBalanceAdjustment.user_id == user.id
+            ).order_by(AdminBalanceAdjustment.created_at.desc()).limit(20)
+            adjustments_result = await session.execute(adjustments_query)
+            adjustments = adjustments_result.scalars().all()
             
             # Объединяем операции
             all_operations = []
@@ -4724,6 +4731,14 @@ async def process_referral_history(callback: types.CallbackQuery):
                     'type': 'withdrawal',
                     'date': withdrawal.created_at,
                     'data': withdrawal
+                })
+            
+            # Добавляем ручные начисления админов
+            for adjustment in adjustments:
+                all_operations.append({
+                    'type': 'adjustment',
+                    'date': adjustment.created_at,
+                    'data': adjustment
                 })
             
             # Сортируем по дате
@@ -4757,6 +4772,11 @@ async def process_referral_history(callback: types.CallbackQuery):
                         status_text = "Одобрено" if withdrawal.status == 'approved' else "Отклонено"
                         text += f"💸 <b>-{withdrawal.amount:,}₽</b> вывод {status_emoji}\n"
                         text += f"   {status_text} · {date_str}\n\n"
+                    
+                    elif op['type'] == 'adjustment':
+                        adjustment = op['data']
+                        text += f"🎁 <b>+{adjustment.amount:,}₽</b> начислено админом\n"
+                        text += f"   {date_str}\n\n"
             
             # Клавиатура
             keyboard = InlineKeyboardMarkup(inline_keyboard=[

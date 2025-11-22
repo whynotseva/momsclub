@@ -99,10 +99,10 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     # Заголовок с активным фильтром
     filter_names = {
         "all": "Все",
-        "critical": "🔴 Критично (1-3д)",
-        "urgent": "🟠 Срочно (4-7д)",
-        "warning": "🟡 Внимание (8-14д)",
-        "normal": "🟢 Норма (15+д)",
+        "critical": "⚠️ Критично (1-3д)",
+        "urgent": "⏰ Срочно (4-7д)",
+        "warning": "� Внимание (8-14д)",
+        "normal": "Норма (15+д)",
         "lifetime": "♾️ Пожизненные"
     }
     
@@ -113,29 +113,29 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     
     inline_kb = []
     
-    # Кнопки фильтров
+    # Кнопки фильтров (без цветных эмодзи, чтобы не было пёстро)
     filter_buttons_row1 = [
         InlineKeyboardButton(
             text="Все" if filter_type != "all" else "✅ Все",
             callback_data=f"admin_subscription_dates:0:all"
         ),
         InlineKeyboardButton(
-            text="🔴 1-3д" if filter_type != "critical" else "✅ 1-3д",
+            text="⚠️ 1-3д" if filter_type != "critical" else "✅ 1-3д",
             callback_data=f"admin_subscription_dates:0:critical"
         ),
         InlineKeyboardButton(
-            text="🟠 4-7д" if filter_type != "urgent" else "✅ 4-7д",
+            text="⏰ 4-7д" if filter_type != "urgent" else "✅ 4-7д",
             callback_data=f"admin_subscription_dates:0:urgent"
         )
     ]
     
     filter_buttons_row2 = [
         InlineKeyboardButton(
-            text="🟡 8-14д" if filter_type != "warning" else "✅ 8-14д",
+            text="� 8-14д" if filter_type != "warning" else "✅ 8-14д",
             callback_data=f"admin_subscription_dates:0:warning"
         ),
         InlineKeyboardButton(
-            text="🟢 15+д" if filter_type != "normal" else "✅ 15+д",
+            text="15+д" if filter_type != "normal" else "✅ 15+д",
             callback_data=f"admin_subscription_dates:0:normal"
         ),
         InlineKeyboardButton(

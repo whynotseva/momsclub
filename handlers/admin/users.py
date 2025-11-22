@@ -68,6 +68,9 @@ from database.crud import (
     revoke_user_badge,
     send_badge_notification,
     has_user_badge,
+    is_favorite,
+    add_to_favorites,
+    remove_from_favorites,
 )
 from database.models import User, Subscription, PaymentLog
 from loyalty.levels import calc_tenure_days, level_for_days
@@ -85,6 +88,7 @@ class AdminStates(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_days = State()
     waiting_for_end_date = State()
+    waiting_for_favorite_note = State()
 
 
 @users_router.callback_query(F.data == "admin_users_menu")
@@ -358,8 +362,8 @@ async def process_user_id(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-async def process_update_user_info(callback: CallbackQuery, telegram_id: int, return_to_lifetime_page: int = None, return_to_top_page: int = None, return_to_inactive_days: int = None, return_to_inactive_page: int = None, return_to_autorenew_source: str = None, return_to_autorenew_page: int = None, return_to_autorenew_sort: str = None):
-    logger.info(f"[admin_users] process_update_user_info начат для telegram_id: {telegram_id}, return_to_lifetime_page: {return_to_lifetime_page}, return_to_top_page: {return_to_top_page}, return_to_autorenew: {return_to_autorenew_source}")
+async def process_update_user_info(callback: CallbackQuery, telegram_id: int, return_to_lifetime_page: int = None, return_to_top_page: int = None, return_to_inactive_days: int = None, return_to_inactive_page: int = None, return_to_autorenew_source: str = None, return_to_autorenew_page: int = None, return_to_autorenew_sort: str = None, return_to_favorites_page: int = None):
+    logger.info(f"[admin_users] process_update_user_info начат для telegram_id: {telegram_id}, return_to_lifetime_page: {return_to_lifetime_page}, return_to_top_page: {return_to_top_page}, return_to_autorenew: {return_to_autorenew_source}, return_to_favorites: {return_to_favorites_page}")
     async with AsyncSessionLocal() as session:
         user = await get_user_by_telegram_id(session, telegram_id)
         if not user:
@@ -508,6 +512,9 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
         
         user_info = "\n".join(user_info_lines)
 
+        # Проверяем, находится ли пользователь в избранном
+        user_is_favorite = await is_favorite(session, callback.from_user.id, user.telegram_id)
+
         # Новая структура: 4 раздела
         keyboard_buttons = [
             [InlineKeyboardButton(
@@ -525,18 +532,33 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
             [InlineKeyboardButton(
                 text="🛡️ Модерация",
                 callback_data=f"admin_moderation_menu:{user.telegram_id}"
-            )],
-            [InlineKeyboardButton(
+            )]
+        ]
+        
+        # Кнопка избранного
+        if user_is_favorite:
+            keyboard_buttons.append([InlineKeyboardButton(
+                text="⭐ В избранном",
+                callback_data=f"admin_toggle_favorite:{user.telegram_id}"
+            )])
+        else:
+            keyboard_buttons.append([InlineKeyboardButton(
+                text="☆ Добавить в избранное",
+                callback_data=f"admin_toggle_favorite:{user.telegram_id}"
+            )])
+        
+        # Кнопка "Назад"
+        keyboard_buttons.append([InlineKeyboardButton(
                 text="« Назад", 
                 callback_data=(
                     f"admin_lifetime_subscriptions:{return_to_lifetime_page}" if return_to_lifetime_page is not None 
                     else f"admin_top_active_users:{return_to_top_page}" if return_to_top_page is not None
                     else f"admin_inactive_users:{return_to_inactive_days}:{return_to_inactive_page}" if return_to_inactive_days is not None
                     else f"admin_autorenew_{return_to_autorenew_source}:{return_to_autorenew_page}:{return_to_autorenew_sort}" if return_to_autorenew_source is not None
+                    else f"admin_favorites:{return_to_favorites_page}" if return_to_favorites_page is not None
                     else "admin_back"
                 )
-            )]
-        ]
+            )])
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
@@ -1685,6 +1707,35 @@ async def process_user_info_from_autorenew(callback: CallbackQuery):
         await callback.answer("❌ Ошибка при загрузке информации о пользователе", show_alert=True)
 
 
+@users_router.callback_query(F.data.startswith("admin_user_info_from_favorites:"))
+async def process_user_info_from_favorites(callback: CallbackQuery):
+    """Обработчик клика на пользователя из списка избранных"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    try:
+        # Парсим: admin_user_info_from_favorites:telegram_id:page
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+        logger.info(f"[admin_users] admin_user_info_from_favorites вызван для telegram_id: {telegram_id}, page: {page}")
+    except (ValueError, IndexError) as e:
+        logger.error(f"[admin_users] Ошибка при парсинге admin_user_info_from_favorites: {e}, data: {callback.data}")
+        await callback.answer("Ошибка: неверный формат данных", show_alert=True)
+        return
+
+    try:
+        await process_update_user_info(callback, telegram_id, return_to_favorites_page=page)
+        await callback.answer()
+        logger.info(f"[admin_users] admin_user_info_from_favorites успешно обработан для telegram_id: {telegram_id}")
+    except Exception as e:
+        logger.error(f"[admin_users] Ошибка в process_user_info_from_favorites для telegram_id {telegram_id}: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке информации о пользователе", show_alert=True)
+
+
 @users_router.callback_query(F.data.startswith("admin_lifetime_subscriptions:"))
 async def process_lifetime_subscriptions_list(callback: CallbackQuery):
     """Отображает список пользователей с пожизненными подписками с пагинацией"""
@@ -2077,6 +2128,131 @@ async def show_moderation_menu(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка в show_moderation_menu: {e}", exc_info=True)
         await callback.answer("❌ Ошибка при открытии меню", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_toggle_favorite:"))
+async def toggle_favorite_handler(callback: CallbackQuery, state: FSMContext):
+    """Переключает статус избранного для пользователя"""
+    try:
+        user_telegram_id = int(callback.data.split(":")[1])
+        
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not is_admin(admin):
+                await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+                return
+            
+            # Проверяем текущий статус
+            is_fav = await is_favorite(session, callback.from_user.id, user_telegram_id)
+            
+            if is_fav:
+                # Удаляем из избранного
+                success = await remove_from_favorites(session, callback.from_user.id, user_telegram_id)
+                if success:
+                    await callback.answer("❌ Удалено из избранного", show_alert=False)
+                else:
+                    await callback.answer("❌ Ошибка при удалении", show_alert=True)
+                    return
+            else:
+                # Добавляем в избранное - спрашиваем заметку
+                await state.set_state(AdminStates.waiting_for_favorite_note)
+                await state.update_data(user_telegram_id=user_telegram_id)
+                
+                text = (
+                    "✏️ <b>Добавление в избранное</b>\n\n"
+                    "Введите заметку для этого пользователя (необязательно):\n\n"
+                    "<i>Примеры:\n"
+                    "• На контроле - истекает подписка\n"
+                    "• Активная в группе\n"
+                    "• Постоянный клиент</i>\n\n"
+                    "Или отправьте /skip чтобы пропустить"
+                )
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="Пропустить",
+                        callback_data=f"admin_add_favorite_no_note:{user_telegram_id}"
+                    )]
+                ])
+                
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+                await callback.answer()
+                return
+        
+        # Обновляем отображение
+        await process_update_user_info(callback, user_telegram_id)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в toggle_favorite_handler: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_add_favorite_no_note:"))
+async def add_favorite_no_note(callback: CallbackQuery, state: FSMContext):
+    """Добавляет пользователя в избранное без заметки"""
+    try:
+        user_telegram_id = int(callback.data.split(":")[1])
+        
+        async with AsyncSessionLocal() as session:
+            result = await add_to_favorites(session, callback.from_user.id, user_telegram_id, note=None)
+            
+            if result:
+                await callback.answer("⭐ Добавлено в избранное", show_alert=False)
+            else:
+                await callback.answer("⚠️ Уже в избранном", show_alert=True)
+        
+        await state.clear()
+        await process_update_user_info(callback, user_telegram_id)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в add_favorite_no_note: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+        await state.clear()
+
+
+@users_router.message(AdminStates.waiting_for_favorite_note)
+async def process_favorite_note(message: Message, state: FSMContext):
+    """Обрабатывает введенную заметку для избранного"""
+    try:
+        data = await state.get_data()
+        user_telegram_id = data.get("user_telegram_id")
+        
+        if not user_telegram_id:
+            await message.answer("❌ Ошибка: пользователь не найден")
+            await state.clear()
+            return
+        
+        note = message.text.strip()
+        
+        if note == "/skip":
+            note = None
+        elif len(note) > 500:
+            await message.answer("❌ Заметка слишком длинная (макс. 500 символов). Попробуйте еще раз.")
+            return
+        
+        async with AsyncSessionLocal() as session:
+            result = await add_to_favorites(session, message.from_user.id, user_telegram_id, note=note)
+            
+            if result:
+                await message.answer("⭐ Добавлено в избранное!")
+            else:
+                await message.answer("⚠️ Уже в избранном")
+        
+        await state.clear()
+        
+        # Показываем кнопку возврата
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="👁️ Открыть профиль",
+                callback_data=f"admin_user_info:{user_telegram_id}"
+            )]
+        ])
+        await message.answer("Готово!", reply_markup=keyboard)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в process_favorite_note: {e}", exc_info=True)
+        await message.answer("❌ Произошла ошибка")
+        await state.clear()
 
 
 def register_admin_users_handlers(dp):

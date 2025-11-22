@@ -1,7 +1,7 @@
 from sqlalchemy import select, func, update, and_, or_, exists, Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint, case, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta, date
-from database.models import User, Subscription, PaymentLog, PromoCode, UserPromoCode, SubscriptionNotification, MessageTemplate, ScheduledMessage, ScheduledMessageRecipient, AutorenewalCancellationRequest, UserBadge, LoyaltyEvent, MigrationNotification, GroupActivity
+from database.models import User, Subscription, PaymentLog, PromoCode, UserPromoCode, SubscriptionNotification, MessageTemplate, ScheduledMessage, ScheduledMessageRecipient, AutorenewalCancellationRequest, UserBadge, LoyaltyEvent, MigrationNotification, GroupActivity, FavoriteUser
 from utils.constants import RETURN_PROMO_CONFIG
 import random
 import string
@@ -3888,4 +3888,166 @@ async def get_inactive_users(db: AsyncSession, days: int = 30, limit: int = 20, 
     total_count = await db.scalar(count_query) or 0
     
     return [(user, activity) for user, activity in users_with_activity], total_count
+
+
+# Функции для работы с избранными пользователями
+async def add_to_favorites(db: AsyncSession, admin_telegram_id: int, user_telegram_id: int, note: str = None):
+    """
+    Добавляет пользователя в избранное админа
+    
+    Args:
+        admin_telegram_id: Telegram ID админа
+        user_telegram_id: Telegram ID пользователя
+        note: Заметка о пользователе
+    
+    Returns:
+        FavoriteUser или None если уже существует
+    """
+    try:
+        favorite = FavoriteUser(
+            admin_telegram_id=admin_telegram_id,
+            user_telegram_id=user_telegram_id,
+            note=note
+        )
+        db.add(favorite)
+        await db.commit()
+        await db.refresh(favorite)
+        logger.info(f"Админ {admin_telegram_id} добавил пользователя {user_telegram_id} в избранное")
+        return favorite
+    except IntegrityError:
+        await db.rollback()
+        logger.warning(f"Пользователь {user_telegram_id} уже в избранном у админа {admin_telegram_id}")
+        return None
+
+
+async def remove_from_favorites(db: AsyncSession, admin_telegram_id: int, user_telegram_id: int):
+    """
+    Удаляет пользователя из избранного админа
+    
+    Args:
+        admin_telegram_id: Telegram ID админа
+        user_telegram_id: Telegram ID пользователя
+    
+    Returns:
+        True если удалено, False если не найдено
+    """
+    query = select(FavoriteUser).where(
+        and_(
+            FavoriteUser.admin_telegram_id == admin_telegram_id,
+            FavoriteUser.user_telegram_id == user_telegram_id
+        )
+    )
+    result = await db.execute(query)
+    favorite = result.scalar_one_or_none()
+    
+    if favorite:
+        await db.delete(favorite)
+        await db.commit()
+        logger.info(f"Админ {admin_telegram_id} удалил пользователя {user_telegram_id} из избранного")
+        return True
+    return False
+
+
+async def update_favorite_note(db: AsyncSession, admin_telegram_id: int, user_telegram_id: int, note: str):
+    """
+    Обновляет заметку для избранного пользователя
+    
+    Args:
+        admin_telegram_id: Telegram ID админа
+        user_telegram_id: Telegram ID пользователя
+        note: Новая заметка
+    
+    Returns:
+        True если обновлено, False если не найдено
+    """
+    query = (
+        update(FavoriteUser)
+        .where(
+            and_(
+                FavoriteUser.admin_telegram_id == admin_telegram_id,
+                FavoriteUser.user_telegram_id == user_telegram_id
+            )
+        )
+        .values(note=note, updated_at=datetime.now())
+    )
+    result = await db.execute(query)
+    await db.commit()
+    
+    if result.rowcount > 0:
+        logger.info(f"Админ {admin_telegram_id} обновил заметку для пользователя {user_telegram_id}")
+        return True
+    return False
+
+
+async def get_favorite(db: AsyncSession, admin_telegram_id: int, user_telegram_id: int):
+    """
+    Получает запись избранного пользователя
+    
+    Args:
+        admin_telegram_id: Telegram ID админа
+        user_telegram_id: Telegram ID пользователя
+    
+    Returns:
+        FavoriteUser или None
+    """
+    query = select(FavoriteUser).where(
+        and_(
+            FavoriteUser.admin_telegram_id == admin_telegram_id,
+            FavoriteUser.user_telegram_id == user_telegram_id
+        )
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def is_favorite(db: AsyncSession, admin_telegram_id: int, user_telegram_id: int) -> bool:
+    """
+    Проверяет, находится ли пользователь в избранном админа
+    
+    Args:
+        admin_telegram_id: Telegram ID админа
+        user_telegram_id: Telegram ID пользователя
+    
+    Returns:
+        True если в избранном, иначе False
+    """
+    favorite = await get_favorite(db, admin_telegram_id, user_telegram_id)
+    return favorite is not None
+
+
+async def get_admin_favorites(db: AsyncSession, admin_telegram_id: int, limit: int = 50, page: int = 0):
+    """
+    Получает список избранных пользователей админа с их данными
+    
+    Args:
+        admin_telegram_id: Telegram ID админа
+        limit: Количество на страницу
+        page: Номер страницы
+    
+    Returns:
+        Tuple[List[Tuple[User, FavoriteUser]], int]: Список кортежей (пользователь, избранное) и общее количество
+    """
+    offset = page * limit
+    
+    # Запрос с join к User для получения актуальных данных
+    query = (
+        select(User, FavoriteUser)
+        .join(FavoriteUser, User.telegram_id == FavoriteUser.user_telegram_id)
+        .where(FavoriteUser.admin_telegram_id == admin_telegram_id)
+        .order_by(FavoriteUser.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    
+    result = await db.execute(query)
+    favorites_with_users = result.all()
+    
+    # Получаем общее количество
+    count_query = (
+        select(func.count(FavoriteUser.id))
+        .where(FavoriteUser.admin_telegram_id == admin_telegram_id)
+    )
+    total_count = await db.scalar(count_query) or 0
+    
+    return [(user, favorite) for user, favorite in favorites_with_users], total_count
 

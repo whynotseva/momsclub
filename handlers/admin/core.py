@@ -414,6 +414,9 @@ def _admin_menu_keyboard(user=None):
         InlineKeyboardButton(text="👤 Пользователи", callback_data="admin_users_menu"),
         InlineKeyboardButton(text="🤝 Реф. связи", callback_data="admin_referral_info")
     ])
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="⭐ Избранное", callback_data="admin_favorites:0")
+    ])
     
     # ⚙️ УПРАВЛЕНИЕ И НАСТРОЙКИ (только для can_manage_admins)
     if user and can_manage_admins(user):

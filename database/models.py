@@ -351,3 +351,23 @@ class GroupActivityLog(Base):
     
     def __repr__(self):
         return f"<GroupActivityLog user_id={self.user_id} date={self.date} messages={self.message_count}>"
+
+
+class FavoriteUser(Base):
+    """Модель для избранных пользователей админа"""
+    __tablename__ = "favorite_users"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    admin_telegram_id = Column(Integer, nullable=False)  # Telegram ID админа, который добавил в избранное
+    user_telegram_id = Column(Integer, nullable=False)  # Telegram ID пользователя, которого добавили
+    note = Column(Text, nullable=True)  # Заметка админа о пользователе
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Уникальность: один админ не может добавить одного пользователя дважды
+    __table_args__ = (
+        UniqueConstraint('admin_telegram_id', 'user_telegram_id', name='unique_admin_favorite_user'),
+    )
+    
+    def __repr__(self):
+        return f"<FavoriteUser admin={self.admin_telegram_id} user={self.user_telegram_id}>"

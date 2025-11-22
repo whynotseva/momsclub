@@ -18,6 +18,7 @@ from handlers.admin import (
     register_admin_loyalty_handlers,
     register_admin_cancellations_handlers,
     register_admin_users_handlers,
+    register_admin_favorites_handlers,
     register_finance_handlers,
     register_activity_handlers,
     register_prediction_handlers,
@@ -1540,6 +1541,8 @@ async def main():
     # ВАЖНО: Модуль поиска и карточки пользователя регистрируем ПЕРЕД лояльностью,
     # чтобы обработчики admin_user_info имели приоритет над обработчиками лояльности
     register_admin_users_handlers(dp)
+    # Модуль избранных пользователей
+    register_admin_favorites_handlers(dp)
     # Модуль финансовой статистики пользователя
     register_finance_handlers(dp)
     # Модуль расширенной активности пользователя в группе

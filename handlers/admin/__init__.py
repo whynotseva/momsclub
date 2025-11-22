@@ -5,6 +5,7 @@ from .promocodes import register_admin_promocodes_handlers
 from .loyalty import register_admin_loyalty_handlers
 from .cancellations import register_admin_cancellations_handlers
 from .users import register_admin_users_handlers
+from .favorites import register_admin_favorites_handlers
 from .user_finance import register_finance_handlers
 from .user_activity import register_activity_handlers
 from .user_prediction import register_prediction_handlers

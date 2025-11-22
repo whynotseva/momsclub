@@ -62,11 +62,11 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     
     # Фильтрация
     now = datetime.now()
+    from utils.helpers import is_lifetime_subscription
+    
     if filter_type != "all":
         filtered_data = []
         for user, subscription in subscriptions_data:
-            from utils.helpers import is_lifetime_subscription
-            
             if filter_type == "lifetime" and is_lifetime_subscription(subscription):
                 filtered_data.append((user, subscription))
             elif filter_type != "lifetime" and not is_lifetime_subscription(subscription):

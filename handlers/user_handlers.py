@@ -4694,11 +4694,69 @@ async def process_referral_history(callback: types.CallbackQuery):
             
             # Получаем историю наград
             from database.crud import get_referral_rewards
-            rewards = await get_referral_rewards(session, user.id, limit=10)
+            rewards = await get_referral_rewards(session, user.id, limit=20)
             
-            # Формируем текст через helper
-            from utils.referral_messages import get_referral_history_text
-            text = get_referral_history_text(rewards)
+            # Получаем историю выводов
+            from database.models import WithdrawalRequest
+            from sqlalchemy import select
+            withdrawals_query = select(WithdrawalRequest).where(
+                WithdrawalRequest.user_id == user.id,
+                WithdrawalRequest.status.in_(['approved', 'rejected'])
+            ).order_by(WithdrawalRequest.created_at.desc()).limit(20)
+            withdrawals_result = await session.execute(withdrawals_query)
+            withdrawals = withdrawals_result.scalars().all()
+            
+            # Объединяем операции
+            all_operations = []
+            
+            # Добавляем награды
+            for reward, referee in rewards:
+                all_operations.append({
+                    'type': 'reward',
+                    'date': reward.created_at,
+                    'data': reward,
+                    'referee': referee
+                })
+            
+            # Добавляем списания
+            for withdrawal in withdrawals:
+                all_operations.append({
+                    'type': 'withdrawal',
+                    'date': withdrawal.created_at,
+                    'data': withdrawal
+                })
+            
+            # Сортируем по дате
+            all_operations.sort(key=lambda x: x['date'], reverse=True)
+            
+            # Формируем текст
+            text = f"📊 <b>История операций</b>\n\n"
+            text += f"💰 Текущий баланс: {user.referral_balance or 0:,}₽\n\n"
+            
+            if not all_operations:
+                text += "📋 Нет операций"
+            else:
+                for op in all_operations[:20]:
+                    date_str = op['date'].strftime('%d.%m.%Y %H:%M')
+                    
+                    if op['type'] == 'reward':
+                        reward = op['data']
+                        referee = op['referee']
+                        referee_name = referee.username or referee.first_name or f"ID:{referee.telegram_id}"
+                        
+                        if reward.reward_type == 'money':
+                            text += f"💰 <b>+{reward.reward_amount}₽</b> от @{referee_name}\n"
+                        else:
+                            text += f"📅 <b>+{reward.reward_amount} дн.</b> от @{referee_name}\n"
+                        
+                        text += f"   {date_str}\n\n"
+                    
+                    elif op['type'] == 'withdrawal':
+                        withdrawal = op['data']
+                        status_emoji = "✅" if withdrawal.status == 'approved' else "❌"
+                        status_text = "Одобрено" if withdrawal.status == 'approved' else "Отклонено"
+                        text += f"💸 <b>-{withdrawal.amount:,}₽</b> вывод {status_emoji}\n"
+                        text += f"   {status_text} · {date_str}\n\n"
             
             # Клавиатура
             keyboard = InlineKeyboardMarkup(inline_keyboard=[

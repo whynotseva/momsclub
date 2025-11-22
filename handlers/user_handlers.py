@@ -1864,11 +1864,22 @@ async def process_profile(message: types.Message):
                         admin_display_escaped = escape_markdown_v2(admin_display)
                         admin_status_text = f"\n\n✨ *{admin_display_escaped}* ✨\n"
                 
+                # Добавляем информацию о заработке
+                referral_earnings_text = ""
+                total_earned = user.total_earned_referral or 0
+                current_balance = user.referral_balance or 0
+                
+                if total_earned > 0:
+                    total_earned_escaped = escape_markdown_v2(f"{total_earned:,}₽")
+                    referral_earnings_text = f"\n💰 *Заработано с Moms Club:* {total_earned_escaped}\n"
+                elif current_balance == 0:
+                    referral_earnings_text = f"\n💡 *Начни зарабатывать\\!* Загляни в реферальную программу\n"
+                
                 # Новый формат текста
                 profile_text = f"""🎀 *Добро пожаловать в личный кабинет\\!*
 
 👋 Рады видеть вас, {user_name_escaped}
-{admin_status_text}{loyalty_status_escaped}{badges_text_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
+{admin_status_text}{referral_earnings_text}{loyalty_status_escaped}{badges_text_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
                 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
@@ -2290,11 +2301,22 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
                         admin_display_escaped = escape_markdown_v2(admin_display)
                         admin_status_text = f"\n\n✨ *{admin_display_escaped}* ✨\n"
                 
+                # Добавляем информацию о заработке
+                referral_earnings_text = ""
+                total_earned = user.total_earned_referral or 0
+                current_balance = user.referral_balance or 0
+                
+                if total_earned > 0:
+                    total_earned_escaped = escape_markdown_v2(f"{total_earned:,}₽")
+                    referral_earnings_text = f"\n💰 *Заработано с Moms Club:* {total_earned_escaped}\n"
+                elif current_balance == 0:
+                    referral_earnings_text = f"\n💡 *Начни зарабатывать\\!* Загляни в реферальную программу\n"
+                
                 # Новый формат текста
                 profile_text = f"""🎀 *Добро пожаловать в личный кабинет\\!*
 
 👋 Рады видеть вас, {user_name_escaped}
-{admin_status_text}{loyalty_status_escaped}{badges_text_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
+{admin_status_text}{referral_earnings_text}{loyalty_status_escaped}{badges_text_escaped}Выберите нужный пункт в меню ниже — всё под рукой"""
                 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[

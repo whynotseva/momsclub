@@ -3,7 +3,9 @@
 """
 
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from database.config import AsyncSessionLocal
 from database.crud import (
     get_withdrawal_requests,
@@ -16,6 +18,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 withdrawals_router = Router()
+
+
+class WithdrawalRejectionStates(StatesGroup):
+    """Состояния FSM для отклонения заявки на вывод"""
+    waiting_reason = State()
 
 
 def register_admin_withdrawals_handlers(dp):
@@ -178,47 +185,112 @@ async def approve_withdrawal(callback: CallbackQuery):
 
 
 @withdrawals_router.callback_query(F.data.startswith("admin_withdrawal_reject:"))
-async def reject_withdrawal(callback: CallbackQuery):
-    """Отклоняет заявку на вывод"""
+async def reject_withdrawal(callback: CallbackQuery, state: FSMContext):
+    """Запрашивает причину отклонения заявки"""
     try:
         withdrawal_id = int(callback.data.split(":")[1])
         
         async with AsyncSessionLocal() as session:
             admin = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not is_admin(admin):
+                await callback.answer("❌ Нет доступа", show_alert=True)
+                return
             
+            # Получаем заявку
+            from database.models import WithdrawalRequest
+            withdrawal = await session.get(WithdrawalRequest, withdrawal_id)
+            
+            if not withdrawal:
+                await callback.answer("❌ Заявка не найдена", show_alert=True)
+                return
+            
+            user = await get_user_by_id(session, withdrawal.user_id)
+            
+            # Сохраняем данные в state
+            await state.update_data(
+                withdrawal_id=withdrawal_id,
+                user_telegram_id=user.telegram_id,
+                amount=withdrawal.amount
+            )
+            
+            # Запрашиваем причину
+            text = f"❌ <b>Отклонение заявки на вывод</b>\n\n"
+            text += f"💰 Сумма: {withdrawal.amount:,}₽\n"
+            text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n\n"
+            text += f"Введите причину отклонения:\n"
+            text += f"Например: <code>Неверные реквизиты</code>, <code>Недостаточно средств</code>, <code>Подозрительная активность</code>"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Отмена", callback_data="admin_withdrawals")]
+            ])
+            
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            await state.set_state(WithdrawalRejectionStates.waiting_reason)
+            
+    except Exception as e:
+        logger.error(f"Ошибка в reject_withdrawal: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@withdrawals_router.message(WithdrawalRejectionStates.waiting_reason)
+async def process_rejection_reason(message: Message, state: FSMContext):
+    """Обрабатывает введенную причину отклонения"""
+    try:
+        reason = message.text.strip()
+        
+        if len(reason) < 3:
+            await message.answer("❌ Причина слишком короткая. Введите более подробную причину:")
+            return
+        
+        if len(reason) > 500:
+            await message.answer("❌ Причина слишком длинная (макс. 500 символов). Сократите:")
+            return
+        
+        # Получаем данные
+        data = await state.get_data()
+        withdrawal_id = data['withdrawal_id']
+        user_telegram_id = data['user_telegram_id']
+        amount = data['amount']
+        
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, message.from_user.id)
+            
+            # Отклоняем заявку
             success = await process_withdrawal_request(
                 session,
                 withdrawal_id,
                 admin.id,
                 'rejected',
-                admin_comment="Неверные реквизиты"
+                admin_comment=reason
             )
             
             if success:
                 # Уведомляем пользователя
-                from database.models import WithdrawalRequest
-                withdrawal = await session.get(WithdrawalRequest, withdrawal_id)
-                user = await get_user_by_id(session, withdrawal.user_id)
-                
                 from utils.referral_messages import get_withdrawal_rejected_text
-                text = get_withdrawal_rejected_text(withdrawal.amount, "Неверные реквизиты")
+                text = get_withdrawal_rejected_text(amount, reason)
                 
                 try:
-                    await callback.bot.send_message(
-                        user.telegram_id,
+                    await message.bot.send_message(
+                        user_telegram_id,
                         text,
                         parse_mode="HTML"
                     )
                 except Exception as e:
-                    logger.error(f"Не удалось отправить уведомление пользователю {user.telegram_id}: {e}")
+                    logger.error(f"Не удалось отправить уведомление пользователю {user_telegram_id}: {e}")
                 
-                await callback.answer("✅ Заявка отклонена", show_alert=True)
+                await message.answer(
+                    f"✅ <b>Заявка отклонена</b>\n\n"
+                    f"💰 Сумма: {amount:,}₽\n"
+                    f"📝 Причина: {reason}\n\n"
+                    f"Пользователь уведомлен.",
+                    parse_mode="HTML"
+                )
             else:
-                await callback.answer("❌ Ошибка при обработке", show_alert=True)
+                await message.answer("❌ Ошибка при обработке заявки")
         
-        # Возвращаемся к списку заявок
-        await show_withdrawal_requests(callback)
+        await state.clear()
         
     except Exception as e:
-        logger.error(f"Ошибка в reject_withdrawal: {e}", exc_info=True)
-        await callback.answer("❌ Произошла ошибка", show_alert=True)
+        logger.error(f"Ошибка в process_rejection_reason: {e}", exc_info=True)
+        await message.answer("❌ Произошла ошибка")
+        await state.clear()

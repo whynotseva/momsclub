@@ -34,15 +34,27 @@ async def show_autorenew_menu(callback: CallbackQuery):
             result_enabled = await session.execute(query_enabled)
             enabled_count = len(result_enabled.scalars().all())
             
-            # Пользователи с выключенным автопродлением (но которые когда-то имели подписку)
-            query_disabled = select(User).where(User.is_recurring_active == False, User.first_payment_date.isnot(None))
+            # Пользователи с выключенным автопродлением И активной подпиской
+            # (в зоне риска - подписка истечёт и не продлится)
+            query_disabled = (
+                select(User)
+                .join(Subscription, User.id == Subscription.user_id)
+                .where(
+                    User.is_recurring_active == False,
+                    Subscription.is_active == True,
+                    Subscription.end_date > datetime.now()
+                )
+                .distinct()
+            )
             result_disabled = await session.execute(query_disabled)
             disabled_count = len(result_disabled.scalars().all())
         
         text = (
             "🔄 <b>Управление автопродлениями</b>\n\n"
             f"✅ <b>Включено:</b> {enabled_count} чел.\n"
-            f"❌ <b>Выключено:</b> {disabled_count} чел.\n\n"
+            f"❌ <b>Выключено (с активной подпиской):</b> {disabled_count} чел.\n\n"
+            "<i>В разделе 'Выключено' показаны пользователи с активной подпиской,\n"
+            "но без автопродления - они в зоне риска!</i>\n\n"
             "Выберите раздел:"
         )
         
@@ -191,15 +203,18 @@ async def show_autorenew_disabled(callback: CallbackQuery):
         page = int(callback.data.split(":")[1])
         
         async with AsyncSessionLocal() as session:
-            # Получаем всех пользователей с выключенным автопродлением (но которые когда-то имели подписку)
+            # Получаем пользователей с выключенным автопродлением И активной подпиской
             query = (
                 select(User)
+                .join(Subscription, User.id == Subscription.user_id)
                 .where(
                     User.is_recurring_active == False,
-                    User.first_payment_date.isnot(None)
+                    Subscription.is_active == True,
+                    Subscription.end_date > datetime.now()
                 )
                 .options(selectinload(User.subscriptions))
-                .order_by(User.updated_at.desc())
+                .distinct()
+                .order_by(Subscription.end_date.asc())  # Сортируем по дате истечения - кто первый потеряет доступ
             )
             result = await session.execute(query)
             all_users = result.scalars().all()
@@ -208,7 +223,12 @@ async def show_autorenew_disabled(callback: CallbackQuery):
             total_pages = (total_users + USERS_PER_PAGE - 1) // USERS_PER_PAGE
             
             if total_users == 0:
-                text = "❌ <b>Пользователи с выключенным автопродлением</b>\n\n📭 Список пуст"
+                text = (
+                    "❌ <b>Выключено автопродление</b>\n\n"
+                    "🎉 Отлично! Все активные пользователи включили автопродление.\n\n"
+                    "<i>Здесь показываются только те, у кого есть активная подписка,\n"
+                    "но автопродление выключено.</i>"
+                )
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="« Назад", callback_data="admin_autorenew_menu")]
                 ])
@@ -222,7 +242,8 @@ async def show_autorenew_disabled(callback: CallbackQuery):
             page_users = all_users[start_idx:end_idx]
             
             text = f"❌ <b>Выключено автопродление</b> (стр. {page + 1}/{total_pages})\n\n"
-            text += f"Всего пользователей: {total_users}\n\n"
+            text += f"⚠️ В зоне риска: {total_users} чел.\n"
+            text += "<i>(есть подписка, но нет автопродления)</i>\n\n"
             
             # Формируем кнопки для каждого пользователя
             keyboard_buttons = []

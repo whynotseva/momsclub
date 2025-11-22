@@ -1,11 +1,12 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from datetime import datetime
 import logging
 
 from database.config import AsyncSessionLocal
-from database.models import User
+from database.models import User, Subscription
 from database.crud import get_user_by_telegram_id
 from utils.admin_permissions import is_admin
 
@@ -88,10 +89,11 @@ async def show_autorenew_enabled(callback: CallbackQuery):
         page = int(callback.data.split(":")[1])
         
         async with AsyncSessionLocal() as session:
-            # Получаем всех пользователей с включенным автопродлением
+            # Получаем всех пользователей с включенным автопродлением и их активные подписки
             query = (
                 select(User)
                 .where(User.is_recurring_active == True)
+                .options(selectinload(User.subscriptions))
                 .order_by(User.updated_at.desc())
             )
             result = await session.execute(query)
@@ -122,14 +124,22 @@ async def show_autorenew_enabled(callback: CallbackQuery):
             for i, usr in enumerate(page_users, start=start_idx + 1):
                 username_display = f"@{usr.username}" if usr.username else f"ID: {usr.telegram_id}"
                 
-                # Информация о подписке
+                # Получаем активную подписку
                 subscription_info = ""
-                if usr.subscription_end_date:
-                    days_left = (usr.subscription_end_date - datetime.now()).days
+                active_sub = None
+                for sub in usr.subscriptions:
+                    if sub.is_active and sub.end_date > datetime.now():
+                        active_sub = sub
+                        break
+                
+                if active_sub:
+                    days_left = (active_sub.end_date - datetime.now()).days
                     if days_left > 0:
                         subscription_info = f" (осталось {days_left} дн.)"
                     else:
-                        subscription_info = " (истекла)"
+                        subscription_info = " (истекает сегодня)"
+                else:
+                    subscription_info = " (нет активной)"
                 
                 button_text = f"{i}. {username_display}{subscription_info}"
                 keyboard_buttons.append([InlineKeyboardButton(
@@ -188,6 +198,7 @@ async def show_autorenew_disabled(callback: CallbackQuery):
                     User.is_recurring_active == False,
                     User.first_payment_date.isnot(None)
                 )
+                .options(selectinload(User.subscriptions))
                 .order_by(User.updated_at.desc())
             )
             result = await session.execute(query)
@@ -218,16 +229,32 @@ async def show_autorenew_disabled(callback: CallbackQuery):
             for i, usr in enumerate(page_users, start=start_idx + 1):
                 username_display = f"@{usr.username}" if usr.username else f"ID: {usr.telegram_id}"
                 
-                # Информация о подписке
+                # Получаем активную или последнюю подписку
                 subscription_info = ""
-                if usr.subscription_end_date:
-                    days_left = (usr.subscription_end_date - datetime.now()).days
+                active_sub = None
+                last_sub = None
+                
+                for sub in usr.subscriptions:
+                    if sub.is_active:
+                        if sub.end_date > datetime.now():
+                            active_sub = sub
+                        else:
+                            last_sub = sub
+                    elif not last_sub or sub.end_date > last_sub.end_date:
+                        last_sub = sub
+                
+                if active_sub:
+                    days_left = (active_sub.end_date - datetime.now()).days
                     if days_left > 0:
                         subscription_info = f" (осталось {days_left} дн.)"
-                    elif days_left == 0:
-                        subscription_info = " (истекает сегодня)"
                     else:
-                        subscription_info = f" (истекла {abs(days_left)} дн. назад)"
+                        subscription_info = " (истекает сегодня)"
+                elif last_sub:
+                    days_ago = (datetime.now() - last_sub.end_date).days
+                    if days_ago > 0:
+                        subscription_info = f" (истекла {days_ago} дн. назад)"
+                    else:
+                        subscription_info = " (истекла)"
                 else:
                     subscription_info = " (нет подписки)"
                 

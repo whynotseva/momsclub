@@ -4,7 +4,7 @@ from sqlalchemy import select
 from datetime import datetime
 import logging
 
-from database.session import AsyncSessionLocal
+from database.config import AsyncSessionLocal
 from database.models import User
 from database.crud import get_user_by_telegram_id
 from utils.admin_permissions import is_admin

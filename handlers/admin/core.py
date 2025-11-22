@@ -48,40 +48,8 @@ async def cmd_admin_check(message: types.Message):
             await message.answer("У вас нет прав доступа к этой команде.")
             return
 
-        # Формируем клавиатуру в зависимости от прав доступа
-        keyboard_buttons = []
-        
-        # Статистика и аналитика - только для тех, кто может видеть выручку
-        if can_view_revenue(user):
-            keyboard_buttons.append([InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")])
-            keyboard_buttons.append([InlineKeyboardButton(text="📈 Расширенная аналитика", callback_data="admin_analytics")])
-        
-        # Пользователи - доступен всем админам
-        keyboard_buttons.append([InlineKeyboardButton(text="👤 Пользователи", callback_data="admin_users_menu")])
-        
-        # Реферальные связи - доступны всем админам
-        keyboard_buttons.append([InlineKeyboardButton(text="🤝 Реферальные связи", callback_data="admin_referral_info")])
-        
-        # Управление промокодами - только для создательницы и разработчика
-        if can_manage_admins(user):
-            keyboard_buttons.append([InlineKeyboardButton(text="🎟️ Управление промокодами", callback_data="admin_manage_promocodes")])
-        
-        # Сроки подписок - доступны всем админам
-        keyboard_buttons.append([InlineKeyboardButton(text="📅 Сроки подписок", callback_data="admin_subscription_dates")])
-        
-        # Дни рождения - доступны всем админам
-        keyboard_buttons.append([InlineKeyboardButton(text="🎂 Дни рождения пользователей", callback_data="admin_birthdays:0")])
-        
-        # Заявки на отмену - доступны всем админам
-        keyboard_buttons.append([InlineKeyboardButton(text="🚫 Заявки на отмену автопродления", callback_data="admin_cancellation_requests")])
-        
-        # Управление админами - только для создательницы и разработчика
-        if can_manage_admins(user):
-            keyboard_buttons.append([InlineKeyboardButton(text="👥 Управление админами", callback_data="admin_manage_admins")])
-        
-        keyboard_buttons.append([InlineKeyboardButton(text="✖️ Закрыть", callback_data="admin_close")])
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        # Используем общую функцию формирования клавиатуры
+        keyboard = _admin_menu_keyboard(user)
 
     banner_path = os.path.join(os.getcwd(), "media", "админка.jpg")
     banner_photo = FSInputFile(banner_path)
@@ -438,7 +406,10 @@ def _admin_menu_keyboard(user=None):
         keyboard_buttons.append([InlineKeyboardButton(text="🎟️ Управление промокодами", callback_data="admin_manage_promocodes")])
     
     keyboard_buttons.append([InlineKeyboardButton(text="📅 Сроки подписок", callback_data="admin_subscription_dates")])
-    keyboard_buttons.append([InlineKeyboardButton(text="🔄 Автопродления", callback_data="admin_autorenew_menu")])
+    
+    # Автопродления - только для создательницы и разработчика
+    if user and can_manage_admins(user):
+        keyboard_buttons.append([InlineKeyboardButton(text="🔄 Автопродления", callback_data="admin_autorenew_menu")])
     
     keyboard_buttons.append([InlineKeyboardButton(text="🎂 Дни рождения пользователей", callback_data="admin_birthdays:0")])
     keyboard_buttons.append([InlineKeyboardButton(text="🚫 Заявки на отмену автопродления", callback_data="admin_cancellation_requests")])

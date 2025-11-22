@@ -8,7 +8,7 @@ import logging
 from database.config import AsyncSessionLocal
 from database.models import User, Subscription
 from database.crud import get_user_by_telegram_id
-from utils.admin_permissions import is_admin
+from utils.admin_permissions import is_admin, can_manage_admins
 from utils.constants import LIFETIME_THRESHOLD
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ async def show_autorenew_menu(callback: CallbackQuery):
     """Показывает главное меню управления автопродлениями"""
     async with AsyncSessionLocal() as session:
         user = await get_user_by_telegram_id(session, callback.from_user.id)
-        if not is_admin(user):
+        if not is_admin(user) or not can_manage_admins(user):
             await callback.answer("У вас нет доступа к этой функции", show_alert=True)
             return
     
@@ -95,7 +95,7 @@ async def show_autorenew_enabled(callback: CallbackQuery):
     """Показывает список пользователей с включенным автопродлением"""
     async with AsyncSessionLocal() as session:
         user = await get_user_by_telegram_id(session, callback.from_user.id)
-        if not is_admin(user):
+        if not is_admin(user) or not can_manage_admins(user):
             await callback.answer("У вас нет доступа к этой функции", show_alert=True)
             return
     
@@ -224,7 +224,7 @@ async def show_autorenew_disabled(callback: CallbackQuery):
     """Показывает список пользователей с выключенным автопродлением"""
     async with AsyncSessionLocal() as session:
         user = await get_user_by_telegram_id(session, callback.from_user.id)
-        if not is_admin(user):
+        if not is_admin(user) or not can_manage_admins(user):
             await callback.answer("У вас нет доступа к этой функции", show_alert=True)
             return
     

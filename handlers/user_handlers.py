@@ -4861,12 +4861,16 @@ async def choose_card_withdrawal(callback: types.CallbackQuery, state: FSMContex
             user = await get_user_by_telegram_id(session, callback.from_user.id)
             await state.update_data(payment_method="card", user_balance=user.referral_balance)
         
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Отмена", callback_data="ref_withdraw")]
+        ])
+        
         await callback.message.delete()
         await callback.message.answer(
             "💳 <b>Вывод на банковскую карту</b>\n\n"
             "Введите номер карты (16 цифр):\n\n"
-            "Например: <code>1234567812345678</code>\n\n"
-            "Или нажмите /cancel для отмены",
+            "Например: <code>1234567812345678</code>",
+            reply_markup=keyboard,
             parse_mode="HTML"
         )
         await state.set_state(WithdrawalStates.waiting_card_number)
@@ -4921,12 +4925,16 @@ async def choose_sbp_withdrawal(callback: types.CallbackQuery, state: FSMContext
             user = await get_user_by_telegram_id(session, callback.from_user.id)
             await state.update_data(payment_method="sbp", user_balance=user.referral_balance)
         
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Отмена", callback_data="ref_withdraw")]
+        ])
+        
         await callback.message.delete()
         await callback.message.answer(
             "📱 <b>Вывод через СБП</b>\n\n"
             "Введите номер телефона (11 цифр):\n\n"
-            "Например: <code>79001234567</code>\n\n"
-            "Или нажмите /cancel для отмены",
+            "Например: <code>79001234567</code>",
+            reply_markup=keyboard,
             parse_mode="HTML"
         )
         await state.set_state(WithdrawalStates.waiting_phone_number)
@@ -5049,9 +5057,14 @@ async def notify_admins_about_withdrawal(bot, user, payment_method, payment_deta
             payment_method
         )
         
+        # Добавляем кнопку для перехода к заявкам
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💸 Перейти к заявкам", callback_data="admin_withdrawals")]
+        ])
+        
         for admin_id in ADMIN_IDS:
             try:
-                await bot.send_message(admin_id, text, parse_mode="HTML")
+                await bot.send_message(admin_id, text, reply_markup=keyboard, parse_mode="HTML")
                 logger.info(f"Отправлено уведомление о выводе админу {admin_id}")
             except Exception as e:
                 logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")

@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import logging
+from datetime import datetime
 
 from database.config import AsyncSessionLocal
 from database.crud import (
@@ -16,7 +17,8 @@ from database.crud import (
     remove_from_favorites,
     update_favorite_note,
     is_favorite,
-    get_active_subscription
+    get_active_subscription,
+    extend_subscription
 )
 from utils.admin_permissions import is_admin
 from utils.helpers import html_kv
@@ -88,8 +90,9 @@ async def show_favorites_list(callback: CallbackQuery):
             total_pages = (total_count + FAVORITES_PER_PAGE - 1) // FAVORITES_PER_PAGE
             start_idx = page * FAVORITES_PER_PAGE
             
-            text = f"⭐ <b>Избранные пользователи</b> (стр. {page + 1}/{total_pages})\n\n"
+            text = f"⭐ <b>Избранные пользователи</b> (стр. {page + 1}/{total_pages})\n"
             text += f"Всего: {total_count}\n\n"
+            text += "<i>⚡ Быстрые действия под каждым пользователем</i>"
             
             keyboard_buttons = []
             
@@ -105,16 +108,39 @@ async def show_favorites_list(callback: CallbackQuery):
                 
                 # Получаем статус подписки
                 subscription = await get_active_subscription(session, user.id)
-                sub_status = format_subscription_status(subscription)
                 
-                # Эмодзи статуса из формата (первый символ)
-                status_emoji = sub_status[0] if sub_status else "❌"
+                # Формируем текст кнопки
+                if subscription:
+                    days_left = (subscription.end_date - datetime.now()).days
+                    
+                    # Визуальные индикаторы
+                    if days_left <= 1:
+                        status_emoji = "🔴"
+                    elif days_left <= 3:
+                        status_emoji = "🟠"
+                    elif days_left <= 7:
+                        status_emoji = "🟡"
+                    else:
+                        status_emoji = "🟢"
+                    
+                    button_text = f"{status_emoji} {i}. {user_name} - {days_left}д"
+                else:
+                    button_text = f"❌ {i}. {user_name}"
                 
-                button_text = f"{status_emoji} {i}. {user_name}"
+                # Кнопка с именем пользователя
                 keyboard_buttons.append([InlineKeyboardButton(
                     text=button_text,
-                    callback_data=f"admin_favorite_user:{user.telegram_id}:{page}"
+                    callback_data=f"fav_info:{user.telegram_id}:{page}"
                 )])
+                
+                # Быстрые действия под пользователем
+                action_buttons = [
+                    InlineKeyboardButton(text="👁️ Bio", callback_data=f"fav_bio:{user.telegram_id}:{page}"),
+                    InlineKeyboardButton(text="➕7д", callback_data=f"fav_add:{user.telegram_id}:7:{page}"),
+                    InlineKeyboardButton(text="➕30д", callback_data=f"fav_add:{user.telegram_id}:30:{page}"),
+                    InlineKeyboardButton(text="✏️", callback_data=f"admin_edit_favorite_note:{user.telegram_id}:{page}")
+                ]
+                keyboard_buttons.append(action_buttons)
             
             # Навигация
             nav_buttons = []
@@ -326,3 +352,112 @@ async def edit_favorite_note_finish(message: Message, state: FSMContext):
         logger.error(f"Ошибка в edit_favorite_note_finish: {e}", exc_info=True)
         await message.answer("❌ Произошла ошибка")
         await state.clear()
+
+
+# Быстрые действия для избранных
+@favorites_router.callback_query(F.data.startswith("fav_info:"))
+async def show_fav_user_info(callback: CallbackQuery):
+    """Показывает краткую информацию о пользователе"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            subscription = await get_active_subscription(session, user.id)
+            if subscription:
+                days_left = (subscription.end_date - datetime.now()).days
+                date_str = subscription.end_date.strftime("%d.%m.%Y")
+                text = f"👤 {user.first_name or 'Пользователь'}\n\n📅 До: {date_str}\n⏱ Осталось: {days_left} дн."
+            else:
+                text = f"👤 {user.first_name or 'Пользователь'}\n\n❌ Нет активной подписки"
+            
+            await callback.answer(text, show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка в show_fav_user_info: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@favorites_router.callback_query(F.data.startswith("fav_bio:"))
+async def open_fav_bio(callback: CallbackQuery):
+    """Открывает полный bio пользователя"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+        
+        from handlers.admin.users import process_update_user_info
+        await process_update_user_info(callback, telegram_id, return_to_favorites_page=page)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в open_fav_bio: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@favorites_router.callback_query(F.data.startswith("fav_add:"))
+async def confirm_fav_add_days(callback: CallbackQuery):
+    """Запрашивает подтверждение добавления дней"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        days = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            user_name = user.first_name or "Пользователь"
+            if user.username:
+                user_name += f" (@{user.username})"
+        
+        text = (
+            f"⚠️ <b>Подтверждение</b>\n\n"
+            f"Добавить <b>{days} дней</b> к подписке?\n\n"
+            f"👤 {user_name}"
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, добавить", callback_data=f"fav_add_confirm:{telegram_id}:{days}:{page}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin_favorites:{page}")
+            ]
+        ])
+        
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_fav_add_days: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@favorites_router.callback_query(F.data.startswith("fav_add_confirm:"))
+async def fav_add_days_confirmed(callback: CallbackQuery):
+    """Добавляет дни к подписке после подтверждения"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        days = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            await extend_subscription(session, user.id, days, 0, "admin_quick_action")
+            await callback.answer(f"✅ Добавлено {days} дн.", show_alert=True)
+            
+            # Обновляем список
+            callback.data = f"admin_favorites:{page}"
+            await show_favorites_list(callback)
+    except Exception as e:
+        logger.error(f"Ошибка в fav_add_days_confirmed: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)

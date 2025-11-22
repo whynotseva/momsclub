@@ -1239,6 +1239,116 @@ async def cmd_profile(message: types.Message):
     await process_profile(message)
 
 
+# Обработчик команды /referral  
+@user_router.message(Command("referral"), F.chat.type == "private")
+async def cmd_referral(message: types.Message):
+    """Обработчик команды /referral - открывает реферальную программу"""
+    log_message(message.from_user.id, "/referral", "command")
+    
+    from database.crud import get_user_by_telegram_id, has_active_subscription, create_referral_code
+    
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        
+        if not user:
+            await message.answer("Пользователь не найден")
+            return
+        
+        # Проверяем, есть ли активная подписка
+        has_subscription = await has_active_subscription(session, user.id)
+        
+        if not has_subscription:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="💸 Оформить подписку", callback_data="subscribe")],
+                    [InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")]
+                ]
+            )
+            
+            await message.answer(
+                "🤝 <b>Реферальная программа</b>\n\n"
+                "⚠️ Для участия в реферальной программе необходимо иметь активную подписку.\n\n"
+                "Оформите подписку, чтобы получить доступ к реферальной программе и " 
+                "зарабатывать дополнительные дни подписки, приглашая друзей.",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            return
+        
+        # Генерируем или получаем реферальный код
+        referral_code = await create_referral_code(session, user.id)
+        
+        if not referral_code:
+            await message.answer("Ошибка при создании реферального кода")
+            return
+        
+        # Формируем реферальную ссылку
+        bot_username = (await message.bot.get_me()).username
+        referral_link = f"https://t.me/{bot_username}?start=ref_{referral_code}"
+        
+        # Получаем статистику рефералов
+        from sqlalchemy import select, func as sql_func
+        from database.models import User as UserModel
+        
+        # Считаем всех приглашенных
+        total_referrals_query = select(sql_func.count(UserModel.id)).where(UserModel.referrer_id == user.id)
+        total_referrals = await session.scalar(total_referrals_query) or 0
+        
+        # Получаем данные для текста
+        from utils.referral_helpers import get_loyalty_name, get_bonus_percent_for_level
+        from utils.constants import MIN_WITHDRAWAL_AMOUNT
+        
+        balance = user.referral_balance or 0
+        total_earned = user.total_earned_referral or 0
+        total_paid = user.total_referrals_paid or 0
+        loyalty_level = user.current_loyalty_level or 'none'
+        level_name = get_loyalty_name(loyalty_level)
+        bonus_percent = get_bonus_percent_for_level(loyalty_level)
+        
+        # Формируем текст через helper
+        from utils.referral_messages import get_referral_program_text
+        text = get_referral_program_text(
+            balance,
+            total_earned,
+            total_referrals,
+            total_paid,
+            level_name,
+            bonus_percent,
+            referral_link
+        )
+        
+        # Создаем клавиатуру
+        keyboard_buttons = [
+            [InlineKeyboardButton(
+                text="📤 Поделиться ссылкой",
+                switch_inline_query=f"Присоединяйся к Mom's Club по моей ссылке! {referral_link}"
+            )]
+        ]
+        
+        # Кнопка вывода (если баланс >= минимума)
+        if balance >= MIN_WITHDRAWAL_AMOUNT:
+            keyboard_buttons.append([
+                InlineKeyboardButton(text="💸 Вывести средства", callback_data="ref_withdraw")
+            ])
+        
+        # Кнопка истории
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="📊 История начислений", callback_data="ref_history")
+        ])
+        
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        
+        await message.answer(
+            text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+
+
 # Обработчик команды /faq
 @user_router.message(Command("faq"), F.chat.type == "private")
 async def cmd_faq(message: types.Message):

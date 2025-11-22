@@ -1520,6 +1520,7 @@ async def main():
     commands = [
         BotCommand(command="start", description="🔄 Перезапустить бота"),
         BotCommand(command="profile", description="🎀 Личный кабинет"),
+        BotCommand(command="referral", description="🤝 Реферальная программа"),
         BotCommand(command="faq", description="❓ Частые вопросы"),
         BotCommand(command="support", description="🤎 Служба поддержки")
     ]

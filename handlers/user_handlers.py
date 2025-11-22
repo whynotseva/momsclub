@@ -4742,22 +4742,6 @@ async def process_referral_reward_money(callback: types.CallbackQuery):
             await callback.message.edit_text(text, parse_mode="HTML")
             await callback.answer("✅ Начислено!")
             
-            # Отправляем пуш рефералу о том, что его приглашающий получил награду
-            try:
-                referee_text = (
-                    f"🎉 <b>Спасибо за вашу подписку!</b>\n\n"
-                    f"Ваш приглашающий получил награду {money_amount:,}₽ 💰\n\n"
-                    f"Продолжайте пользоваться Mom's Club и ваш друг будет получать процент "
-                    f"с каждого вашего продления! 🔄✨"
-                )
-                await callback.bot.send_message(
-                    referee.telegram_id,
-                    referee_text,
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                logger.error(f"Не удалось отправить пуш рефералу {referee.telegram_id}: {e}")
-            
     except Exception as e:
         logger.error(f"Ошибка в ref_reward_money: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка", show_alert=True)
@@ -4825,22 +4809,6 @@ async def process_referral_reward_days(callback: types.CallbackQuery):
             
             await callback.message.edit_text(text, parse_mode="HTML")
             await callback.answer("✅ Начислено!")
-            
-            # Отправляем пуш рефералу о том, что его приглашающий получил награду
-            try:
-                referee_text = (
-                    f"🎉 <b>Спасибо за вашу подписку!</b>\n\n"
-                    f"Ваш приглашающий получил награду +{REFERRAL_BONUS_DAYS} дней подписки 📅\n\n"
-                    f"Продолжайте пользоваться Mom's Club и ваш друг будет получать бонусы "
-                    f"с каждого вашего продления! 🔄✨"
-                )
-                await callback.bot.send_message(
-                    referee.telegram_id,
-                    referee_text,
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                logger.error(f"Не удалось отправить пуш рефералу {referee.telegram_id}: {e}")
             
     except Exception as e:
         logger.error(f"Ошибка в ref_reward_days: {e}", exc_info=True)

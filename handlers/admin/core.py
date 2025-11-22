@@ -397,12 +397,19 @@ def _admin_menu_keyboard(user=None):
     
     # 📊 АНАЛИТИКА И ДАННЫЕ (только для can_view_revenue)
     if user and can_view_revenue(user):
+        # Заголовок секции с белыми кружками
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="⚪ АНАЛИТИКА И ДАННЫЕ ⚪", callback_data="ignore")
+        ])
         keyboard_buttons.append([
             InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
             InlineKeyboardButton(text="📈 Аналитика", callback_data="admin_analytics")
         ])
     
-    # 👥 ПОЛЬЗОВАТЕЛИ (для всех админов)
+    # 👤 ПОЛЬЗОВАТЕЛИ (для всех админов)
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="⚪ ПОЛЬЗОВАТЕЛИ ⚪", callback_data="ignore")
+    ])
     keyboard_buttons.append([
         InlineKeyboardButton(text="👤 Пользователи", callback_data="admin_users_menu"),
         InlineKeyboardButton(text="🤝 Реф. связи", callback_data="admin_referral_info")
@@ -411,11 +418,14 @@ def _admin_menu_keyboard(user=None):
     # ⚙️ УПРАВЛЕНИЕ И НАСТРОЙКИ (только для can_manage_admins)
     if user and can_manage_admins(user):
         keyboard_buttons.append([
-            InlineKeyboardButton(text="🎟️ Промокоды", callback_data="admin_manage_promocodes"),
-            InlineKeyboardButton(text="� Автопродления", callback_data="admin_autorenew_menu")
+            InlineKeyboardButton(text="⚪ УПРАВЛЕНИЕ И НАСТРОЙКИ ⚪", callback_data="ignore")
         ])
         keyboard_buttons.append([
-            InlineKeyboardButton(text="� Админы", callback_data="admin_manage_admins"),
+            InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin_manage_promocodes"),
+            InlineKeyboardButton(text="🔄 Автопродления", callback_data="admin_autorenew_menu")
+        ])
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="⚙️ Админы", callback_data="admin_manage_admins"),
             InlineKeyboardButton(text="🚫 Заявки", callback_data="admin_cancellation_requests")
         ])
     else:
@@ -426,7 +436,10 @@ def _admin_menu_keyboard(user=None):
     
     # 📅 КАЛЕНДАРЬ И СРОКИ (для всех админов)
     keyboard_buttons.append([
-        InlineKeyboardButton(text="� Сроки подписок", callback_data="admin_subscription_dates"),
+        InlineKeyboardButton(text="⚪ КАЛЕНДАРЬ И СРОКИ ⚪", callback_data="ignore")
+    ])
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="📅 Сроки подписок", callback_data="admin_subscription_dates"),
         InlineKeyboardButton(text="🎂 Дни рождения", callback_data="admin_birthdays:0")
     ])
     
@@ -481,6 +494,12 @@ async def process_back(callback: CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await callback.message.answer_photo(photo=banner_photo, caption="Панель администратора Mom's Club:", reply_markup=keyboard)
+
+
+@core_router.callback_query(F.data == "ignore")
+async def process_ignore(callback: CallbackQuery):
+    """Обработчик для заголовков-разделителей (не делает ничего)"""
+    await callback.answer()
 
 
 @core_router.callback_query(F.data == "admin_close")

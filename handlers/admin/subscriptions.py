@@ -49,7 +49,7 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     parts = callback.data.split(":")
     try:
         page = int(parts[1]) if len(parts) > 1 else 0
-        filter_type = parts[2] if len(parts) > 2 else "all"  # all, critical, urgent, warning, normal, lifetime
+        filter_type = parts[2] if len(parts) > 2 else "all"  # all, urgent (1-5д), warning (7-14д)
     except Exception:
         page = 0
         filter_type = "all"
@@ -67,18 +67,12 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     if filter_type != "all":
         filtered_data = []
         for user, subscription in subscriptions_data:
-            if filter_type == "lifetime" and is_lifetime_subscription(subscription):
-                filtered_data.append((user, subscription))
-            elif filter_type != "lifetime" and not is_lifetime_subscription(subscription):
+            if not is_lifetime_subscription(subscription):
                 days_left = (subscription.end_date - now).days
                 
-                if filter_type == "critical" and days_left <= 3:
+                if filter_type == "urgent" and days_left <= 5:
                     filtered_data.append((user, subscription))
-                elif filter_type == "urgent" and 4 <= days_left <= 7:
-                    filtered_data.append((user, subscription))
-                elif filter_type == "warning" and 8 <= days_left <= 14:
-                    filtered_data.append((user, subscription))
-                elif filter_type == "normal" and days_left >= 15:
+                elif filter_type == "warning" and 7 <= days_left <= 14:
                     filtered_data.append((user, subscription))
         
         subscriptions_data = filtered_data
@@ -99,11 +93,8 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     # Заголовок с активным фильтром
     filter_names = {
         "all": "Все",
-        "critical": "⚠️ Критично (1-3д)",
-        "urgent": "⏰ Срочно (4-7д)",
-        "warning": "� Внимание (8-14д)",
-        "normal": "Норма (15+д)",
-        "lifetime": "♾️ Пожизненные"
+        "urgent": "⚠️ 1-5 дней",
+        "warning": "📅 7-14 дней"
     }
     
     message_text = f"<b>📅 Активные подписки</b> (стр. {page+1}/{total_pages})\n"
@@ -113,39 +104,23 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     
     inline_kb = []
     
-    # Кнопки фильтров (без цветных эмодзи, чтобы не было пёстро)
-    filter_buttons_row1 = [
+    # Кнопки фильтров - 3 штуки в одну линию
+    filter_buttons = [
         InlineKeyboardButton(
             text="Все" if filter_type != "all" else "✅ Все",
             callback_data=f"admin_subscription_dates:0:all"
         ),
         InlineKeyboardButton(
-            text="⚠️ 1-3д" if filter_type != "critical" else "✅ 1-3д",
-            callback_data=f"admin_subscription_dates:0:critical"
-        ),
-        InlineKeyboardButton(
-            text="⏰ 4-7д" if filter_type != "urgent" else "✅ 4-7д",
+            text="⚠️ 1-5д" if filter_type != "urgent" else "✅ 1-5д",
             callback_data=f"admin_subscription_dates:0:urgent"
-        )
-    ]
-    
-    filter_buttons_row2 = [
+        ),
         InlineKeyboardButton(
-            text="� 8-14д" if filter_type != "warning" else "✅ 8-14д",
+            text="📅 7-14д" if filter_type != "warning" else "✅ 7-14д",
             callback_data=f"admin_subscription_dates:0:warning"
-        ),
-        InlineKeyboardButton(
-            text="15+д" if filter_type != "normal" else "✅ 15+д",
-            callback_data=f"admin_subscription_dates:0:normal"
-        ),
-        InlineKeyboardButton(
-            text="♾️" if filter_type != "lifetime" else "✅ ♾️",
-            callback_data=f"admin_subscription_dates:0:lifetime"
         )
     ]
     
-    inline_kb.append(filter_buttons_row1)
-    inline_kb.append(filter_buttons_row2)
+    inline_kb.append(filter_buttons)
     
     if not current_items:
         message_text = f"<b>📅 Активные подписки</b>\n\nПо фильтру \"{filter_names.get(filter_type)}\" ничего не найдено."

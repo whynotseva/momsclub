@@ -161,12 +161,20 @@ async def show_autorenew_enabled(callback: CallbackQuery):
                 
                 if active_sub:
                     days_left = (active_sub.end_date - datetime.now()).days
-                    if days_left > 0:
-                        subscription_info = f" (осталось {days_left} дн.)"
+                    
+                    # Визуальные индикаторы (автопродление включено = хорошо, но показываем статус)
+                    if days_left <= 1:
+                        status_emoji = "🔴"
+                    elif days_left <= 3:
+                        status_emoji = "🟠"
+                    elif days_left <= 7:
+                        status_emoji = "🟡"
                     else:
-                        subscription_info = " (истекает сегодня)"
+                        status_emoji = "🟢"
+                    
+                    subscription_info = f" {status_emoji} {days_left} дн."
                 else:
-                    subscription_info = " (нет активной)"
+                    subscription_info = " ⚫ нет активной"
                 
                 button_text = f"{i}. {username_display}{subscription_info}"
                 keyboard_buttons.append([InlineKeyboardButton(
@@ -303,18 +311,28 @@ async def show_autorenew_disabled(callback: CallbackQuery):
                 
                 if active_sub:
                     days_left = (active_sub.end_date - datetime.now()).days
-                    if days_left > 0:
-                        subscription_info = f" (осталось {days_left} дн.)"
+                    
+                    # Визуальные индикаторы по срочности для зоны риска
+                    if days_left <= 1:
+                        status_emoji = "🔴"
+                        subscription_info = f" {status_emoji} осталось {days_left} дн."
+                    elif days_left <= 3:
+                        status_emoji = "🟠"
+                        subscription_info = f" {status_emoji} осталось {days_left} дн."
+                    elif days_left <= 7:
+                        status_emoji = "🟡"
+                        subscription_info = f" {status_emoji} осталось {days_left} дн."
                     else:
-                        subscription_info = " (истекает сегодня)"
+                        status_emoji = "🟢"
+                        subscription_info = f" {status_emoji} осталось {days_left} дн."
                 elif last_sub:
                     days_ago = (datetime.now() - last_sub.end_date).days
                     if days_ago > 0:
-                        subscription_info = f" (истекла {days_ago} дн. назад)"
+                        subscription_info = f" ⚫ истекла {days_ago} дн. назад"
                     else:
-                        subscription_info = " (истекла)"
+                        subscription_info = " ⚫ истекла"
                 else:
-                    subscription_info = " (нет подписки)"
+                    subscription_info = " ⚫ нет подписки"
                 
                 button_text = f"{i}. {username_display}{subscription_info}"
                 keyboard_buttons.append([InlineKeyboardButton(

@@ -77,7 +77,7 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
                 user_name = f"ID: {user.telegram_id}"
             
             if is_lifetime_subscription(subscription):
-                lines.append(f"💜 {start_idx + i}. <b>{user_name}</b>")
+                lines.append(f"♾️ {start_idx + i}. <b>{user_name}</b>")
                 lines.append(html_kv("📅 Статус", "∞ Пожизненная подписка") + "\n")
             else:
                 days_left = (subscription.end_date - now).days

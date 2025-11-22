@@ -77,15 +77,29 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
                 user_name = f"ID: {user.telegram_id}"
             
             if is_lifetime_subscription(subscription):
-                lines.append(f"∞ {start_idx + i}. <b>{user_name}</b>")
+                lines.append(f"💜 {start_idx + i}. <b>{user_name}</b>")
                 lines.append(html_kv("📅 Статус", "∞ Пожизненная подписка") + "\n")
             else:
                 days_left = (subscription.end_date - now).days
-                expiring_soon = "🔴 " if days_left <= 7 else "🟢 "
+                
+                # Визуальные индикаторы по срочности
+                if days_left <= 1:
+                    status_emoji = "🔴"
+                    status_text = "КРИТИЧНО"
+                elif days_left <= 3:
+                    status_emoji = "🟠"
+                    status_text = "СРОЧНО"
+                elif days_left <= 7:
+                    status_emoji = "🟡"
+                    status_text = "ВНИМАНИЕ"
+                else:
+                    status_emoji = "🟢"
+                    status_text = "НОРМА"
+                
                 date_formatted = subscription.end_date.strftime("%d.%m.%Y")
-                lines.append(f"{expiring_soon}{start_idx + i}. <b>{user_name}</b>")
+                lines.append(f"{status_emoji} {start_idx + i}. <b>{user_name}</b>")
                 lines.append(html_kv("📅 Дата окончания", date_formatted))
-                lines.append(html_kv("⏱ Осталось дней", str(days_left)) + "\n")
+                lines.append(html_kv("⏱ Осталось дней", f"{days_left} ({status_text})") + "\n")
         message_text = "\n".join(lines)
 
     inline_kb = []
@@ -136,13 +150,26 @@ async def export_subscriptions(callback: CallbackQuery):
         user_name = user.first_name or ""
         if user.last_name:
             user_name += f" {user.last_name}"
+        
+        # Определяем статус по той же логике что и в интерфейсе
+        if is_lifetime_subscription(subscription):
+            status = "Пожизненная"
+        elif days_left <= 1:
+            status = "🔴 КРИТИЧНО"
+        elif days_left <= 3:
+            status = "🟠 СРОЧНО"
+        elif days_left <= 7:
+            status = "🟡 ВНИМАНИЕ"
+        else:
+            status = "🟢 НОРМА"
+        
         data.append({
             "ID пользователя": user.telegram_id,
             "Имя пользователя": user_name,
             "Username": f"@{user.username}" if user.username else "",
             "Дата окончания": subscription.end_date.strftime("%d.%m.%Y"),
             "Осталось дней": days_left,
-            "Статус": "Скоро истекает" if days_left <= 7 else "Активна"
+            "Статус": status
         })
 
     df = pd.DataFrame(data)

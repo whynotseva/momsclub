@@ -1871,7 +1871,9 @@ async def process_profile(message: types.Message):
                 
                 if total_earned > 0:
                     total_earned_escaped = escape_markdown_v2(f"{total_earned:,}₽")
+                    balance_escaped = escape_markdown_v2(f"{current_balance:,}₽")
                     referral_earnings_text = f"\n💰 *Заработано с Moms Club:* {total_earned_escaped}\n"
+                    referral_earnings_text += f"💵 *Баланс:* {balance_escaped}\n"
                 elif current_balance == 0:
                     referral_earnings_text = f"\n💡 *Начни зарабатывать\\!* Загляни в реферальную программу\n"
                 
@@ -2308,7 +2310,9 @@ async def process_back_to_profile(callback_query: types.CallbackQuery):
                 
                 if total_earned > 0:
                     total_earned_escaped = escape_markdown_v2(f"{total_earned:,}₽")
+                    balance_escaped = escape_markdown_v2(f"{current_balance:,}₽")
                     referral_earnings_text = f"\n💰 *Заработано с Moms Club:* {total_earned_escaped}\n"
+                    referral_earnings_text += f"💵 *Баланс:* {balance_escaped}\n"
                 elif current_balance == 0:
                     referral_earnings_text = f"\n💡 *Начни зарабатывать\\!* Загляни в реферальную программу\n"
                 

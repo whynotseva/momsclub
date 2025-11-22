@@ -7,7 +7,14 @@ import logging
 
 from database.config import AsyncSessionLocal
 from database.models import User, Subscription
-from database.crud import get_user_by_telegram_id
+from database.crud import (
+    get_user_by_telegram_id,
+    extend_subscription,
+    get_active_subscription,
+    is_favorite,
+    add_to_favorites,
+    remove_from_favorites
+)
 from utils.admin_permissions import is_admin, can_manage_admins
 from utils.constants import LIFETIME_THRESHOLD
 
@@ -143,16 +150,22 @@ async def show_autorenew_enabled(callback: CallbackQuery):
             end_idx = start_idx + USERS_PER_PAGE
             page_users = all_users[start_idx:end_idx]
             
-            text = f"✅ <b>Включено автопродление</b> (стр. {page + 1}/{total_pages})\n\n"
-            text += f"Всего пользователей: {total_users}\n\n"
+            text = f"✅ <b>Включено автопродление</b> (стр. {page + 1}/{total_pages})\n"
+            text += f"Всего: {total_users}\n\n"
+            text += "<i>⚡ Быстрые действия под каждым пользователем</i>"
             
             # Формируем кнопки для каждого пользователя
             keyboard_buttons = []
             for i, usr in enumerate(page_users, start=start_idx + 1):
-                username_display = f"@{usr.username}" if usr.username else f"ID: {usr.telegram_id}"
+                user_name = usr.first_name or ""
+                if usr.last_name:
+                    user_name += f" {usr.last_name}"
+                if usr.username:
+                    user_name += f" (@{usr.username})"
+                if not user_name.strip():
+                    user_name = f"ID: {usr.telegram_id}"
                 
                 # Получаем активную подписку
-                subscription_info = ""
                 active_sub = None
                 for sub in usr.subscriptions:
                     if sub.is_active and sub.end_date > datetime.now():
@@ -162,7 +175,7 @@ async def show_autorenew_enabled(callback: CallbackQuery):
                 if active_sub:
                     days_left = (active_sub.end_date - datetime.now()).days
                     
-                    # Визуальные индикаторы (автопродление включено = хорошо, но показываем статус)
+                    # Визуальные индикаторы
                     if days_left <= 1:
                         status_emoji = "🔴"
                     elif days_left <= 3:
@@ -172,15 +185,24 @@ async def show_autorenew_enabled(callback: CallbackQuery):
                     else:
                         status_emoji = "🟢"
                     
-                    subscription_info = f" {status_emoji} {days_left} дн."
+                    button_text = f"{status_emoji} {i}. {user_name} - {days_left}д"
                 else:
-                    subscription_info = " ⚫ нет активной"
+                    button_text = f"⚫ {i}. {user_name}"
                 
-                button_text = f"{i}. {username_display}{subscription_info}"
+                # Кнопка с именем пользователя
                 keyboard_buttons.append([InlineKeyboardButton(
                     text=button_text,
-                    callback_data=f"admin_user_info_from_autorenew:{usr.telegram_id}:enabled:{page}:{sort_order}"
+                    callback_data=f"renew_info:{usr.telegram_id}:{page}:{sort_order}:enabled"
                 )])
+                
+                # Быстрые действия под пользователем
+                action_buttons = [
+                    InlineKeyboardButton(text="👁️ Bio", callback_data=f"renew_bio:{usr.telegram_id}:{page}:{sort_order}:enabled"),
+                    InlineKeyboardButton(text="➕7д", callback_data=f"renew_add:{usr.telegram_id}:7:{page}:{sort_order}:enabled"),
+                    InlineKeyboardButton(text="➕30д", callback_data=f"renew_add:{usr.telegram_id}:30:{page}:{sort_order}:enabled"),
+                    InlineKeyboardButton(text="⭐", callback_data=f"renew_fav:{usr.telegram_id}:{page}:{sort_order}:enabled")
+                ]
+                keyboard_buttons.append(action_buttons)
             
             # Кнопки сортировки
             sort_buttons = []
@@ -286,17 +308,22 @@ async def show_autorenew_disabled(callback: CallbackQuery):
             end_idx = start_idx + USERS_PER_PAGE
             page_users = all_users[start_idx:end_idx]
             
-            text = f"❌ <b>Выключено автопродление</b> (стр. {page + 1}/{total_pages})\n\n"
-            text += f"⚠️ В зоне риска: {total_users} чел.\n"
-            text += "<i>(есть подписка, но нет автопродления)</i>\n\n"
+            text = f"❌ <b>Выключено автопродление</b> (стр. {page + 1}/{total_pages})\n"
+            text += f"⚠️ В зоне риска: {total_users}\n\n"
+            text += "<i>⚡ Быстрые действия под каждым пользователем</i>"
             
             # Формируем кнопки для каждого пользователя
             keyboard_buttons = []
             for i, usr in enumerate(page_users, start=start_idx + 1):
-                username_display = f"@{usr.username}" if usr.username else f"ID: {usr.telegram_id}"
+                user_name = usr.first_name or ""
+                if usr.last_name:
+                    user_name += f" {usr.last_name}"
+                if usr.username:
+                    user_name += f" (@{usr.username})"
+                if not user_name.strip():
+                    user_name = f"ID: {usr.telegram_id}"
                 
                 # Получаем активную или последнюю подписку
-                subscription_info = ""
                 active_sub = None
                 last_sub = None
                 
@@ -312,33 +339,36 @@ async def show_autorenew_disabled(callback: CallbackQuery):
                 if active_sub:
                     days_left = (active_sub.end_date - datetime.now()).days
                     
-                    # Визуальные индикаторы по срочности для зоны риска
+                    # Визуальные индикаторы по срочности
                     if days_left <= 1:
                         status_emoji = "🔴"
-                        subscription_info = f" {status_emoji} осталось {days_left} дн."
                     elif days_left <= 3:
                         status_emoji = "🟠"
-                        subscription_info = f" {status_emoji} осталось {days_left} дн."
                     elif days_left <= 7:
                         status_emoji = "🟡"
-                        subscription_info = f" {status_emoji} осталось {days_left} дн."
                     else:
-                        status_emoji = "🟢"
-                        subscription_info = f" {status_emoji} осталось {days_left} дн."
+                        status_emoji = "�"
+                    
+                    button_text = f"{status_emoji} {i}. {user_name} - {days_left}д"
                 elif last_sub:
-                    days_ago = (datetime.now() - last_sub.end_date).days
-                    if days_ago > 0:
-                        subscription_info = f" ⚫ истекла {days_ago} дн. назад"
-                    else:
-                        subscription_info = " ⚫ истекла"
+                    button_text = f"⚫ {i}. {user_name} (истекла)"
                 else:
-                    subscription_info = " ⚫ нет подписки"
+                    button_text = f"⚫ {i}. {user_name}"
                 
-                button_text = f"{i}. {username_display}{subscription_info}"
+                # Кнопка с именем пользователя
                 keyboard_buttons.append([InlineKeyboardButton(
                     text=button_text,
-                    callback_data=f"admin_user_info_from_autorenew:{usr.telegram_id}:disabled:{page}:{sort_order}"
+                    callback_data=f"renew_info:{usr.telegram_id}:{page}:{sort_order}:disabled"
                 )])
+                
+                # Быстрые действия под пользователем
+                action_buttons = [
+                    InlineKeyboardButton(text="👁️ Bio", callback_data=f"renew_bio:{usr.telegram_id}:{page}:{sort_order}:disabled"),
+                    InlineKeyboardButton(text="➕7д", callback_data=f"renew_add:{usr.telegram_id}:7:{page}:{sort_order}:disabled"),
+                    InlineKeyboardButton(text="➕30д", callback_data=f"renew_add:{usr.telegram_id}:30:{page}:{sort_order}:disabled"),
+                    InlineKeyboardButton(text="⭐", callback_data=f"renew_fav:{usr.telegram_id}:{page}:{sort_order}:disabled")
+                ]
+                keyboard_buttons.append(action_buttons)
             
             # Кнопки сортировки
             sort_buttons = []
@@ -383,6 +413,152 @@ async def show_autorenew_disabled(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка в show_autorenew_disabled: {e}", exc_info=True)
         await callback.answer("❌ Ошибка при загрузке списка", show_alert=True)
+
+
+# Быстрые действия для автопродлений
+@autorenew_router.callback_query(F.data.startswith("renew_info:"))
+async def show_renew_user_info(callback: CallbackQuery):
+    """Показывает краткую информацию о пользователе"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            subscription = await get_active_subscription(session, user.id)
+            if subscription:
+                days_left = (subscription.end_date - datetime.now()).days
+                date_str = subscription.end_date.strftime("%d.%m.%Y")
+                text = f"👤 {user.first_name or 'Пользователь'}\n\n📅 До: {date_str}\n⏱ Осталось: {days_left} дн."
+            else:
+                text = f"👤 {user.first_name or 'Пользователь'}\n\n❌ Нет активной подписки"
+            
+            await callback.answer(text, show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка в show_renew_user_info: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@autorenew_router.callback_query(F.data.startswith("renew_bio:"))
+async def open_renew_bio(callback: CallbackQuery):
+    """Открывает полный bio пользователя"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        
+        from handlers.admin.users import process_update_user_info
+        await process_update_user_info(callback, telegram_id)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в open_renew_bio: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@autorenew_router.callback_query(F.data.startswith("renew_add:"))
+async def confirm_renew_add_days(callback: CallbackQuery):
+    """Запрашивает подтверждение добавления дней"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        days = int(parts[2])
+        page = int(parts[3])
+        sort_order = parts[4]
+        source = parts[5]  # enabled или disabled
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            user_name = user.first_name or "Пользователь"
+            if user.username:
+                user_name += f" (@{user.username})"
+        
+        text = (
+            f"⚠️ <b>Подтверждение</b>\n\n"
+            f"Добавить <b>{days} дней</b> к подписке?\n\n"
+            f"👤 {user_name}"
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, добавить", callback_data=f"renew_add_confirm:{telegram_id}:{days}:{page}:{sort_order}:{source}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin_autorenew_{source}:{page}:{sort_order}")
+            ]
+        ])
+        
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_renew_add_days: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@autorenew_router.callback_query(F.data.startswith("renew_add_confirm:"))
+async def renew_add_days_confirmed(callback: CallbackQuery):
+    """Добавляет дни к подписке после подтверждения"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        days = int(parts[2])
+        page = int(parts[3])
+        sort_order = parts[4]
+        source = parts[5]
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            await extend_subscription(session, user.id, days, 0, "admin_quick_action")
+            await callback.answer(f"✅ Добавлено {days} дн.", show_alert=True)
+            
+            # Обновляем список
+            callback.data = f"admin_autorenew_{source}:{page}:{sort_order}"
+            if source == "enabled":
+                await show_autorenew_enabled(callback)
+            else:
+                await show_autorenew_disabled(callback)
+    except Exception as e:
+        logger.error(f"Ошибка в renew_add_days_confirmed: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@autorenew_router.callback_query(F.data.startswith("renew_fav:"))
+async def toggle_renew_favorite(callback: CallbackQuery):
+    """Добавляет/удаляет пользователя из избранного"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        page = int(parts[2])
+        sort_order = parts[3]
+        source = parts[4]
+        
+        async with AsyncSessionLocal() as session:
+            is_fav = await is_favorite(session, callback.from_user.id, telegram_id)
+            
+            if is_fav:
+                await remove_from_favorites(session, callback.from_user.id, telegram_id)
+                await callback.answer("❌ Удалено из избранного", show_alert=True)
+            else:
+                await add_to_favorites(session, callback.from_user.id, telegram_id, note=None)
+                await callback.answer("⭐ Добавлено в избранное", show_alert=True)
+            
+            # Обновляем список
+            callback.data = f"admin_autorenew_{source}:{page}:{sort_order}"
+            if source == "enabled":
+                await show_autorenew_enabled(callback)
+            else:
+                await show_autorenew_disabled(callback)
+    except Exception as e:
+        logger.error(f"Ошибка в toggle_renew_favorite: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
 
 
 def register_autorenew_handlers(dp):

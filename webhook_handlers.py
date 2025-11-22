@@ -226,31 +226,24 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
                 )
                 webhook_logger.info(f"Сохранен payment_method_id для пользователя {user.id}")
         
-        # Обработка реферального бонуса
+        # Обработка реферального бонуса (Реферальная система 2.0)
         if user.referrer_id:
             referrer = await get_user_by_id(session, user.referrer_id)
             if referrer:
                 is_first_payment = await is_first_payment_by_user(session, user.id, payment_log_entry.id)
                 
                 if is_first_payment:
-                    payment_logger.info(f"Начисляем бонус {REFERRAL_BONUS_DAYS} дней рефереру {referrer.id}")
+                    payment_logger.info(f"Первый платеж пользователя {user.id}. Отправляем выбор награды рефереру {referrer.id}")
                     
-                    success_bonus = await extend_subscription_days(
-                        session,
-                        referrer.id,
-                        REFERRAL_BONUS_DAYS,
-                        reason=f"referral_bonus_for_{user.id}",
-                        commit=False  # Не коммитим - работаем в транзакции
+                    # Отправляем уведомление с выбором награды (деньги или дни)
+                    await send_referral_reward_choice(
+                        bot,
+                        referrer,
+                        user,
+                        payment_log_entry.amount
                     )
                     
-                    if success_bonus:
-                        await send_referral_bonus_notification(
-                            bot,
-                            referrer.telegram_id,
-                            user.first_name or f"ID: {user.telegram_id}",
-                            REFERRAL_BONUS_DAYS
-                        )
-                        payment_logger.info(f"Реферальный бонус начислен рефереру {referrer.id}")
+                    payment_logger.info(f"Уведомление о выборе награды отправлено рефереру {referrer.id}")
         
         # Уведомление админам
         await send_payment_notification_to_admins(
@@ -636,6 +629,91 @@ async def handle_payment_waiting(payment):
         
     except Exception as e:
         webhook_logger.error(f"Ошибка в handle_payment_waiting: {e}")
+
+
+async def send_referral_reward_choice(bot, referrer, referee, payment_amount):
+    """
+    Отправляет уведомление рефереру с выбором награды (деньги или дни)
+    
+    Args:
+        bot: Экземпляр бота
+        referrer: Объект пользователя-реферера
+        referee: Объект пользователя-реферала
+        payment_amount: Сумма платежа реферала
+    """
+    try:
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from utils.referral_helpers import (
+            calculate_referral_bonus,
+            get_loyalty_emoji,
+            get_bonus_percent_for_level
+        )
+        from utils.referral_messages import get_reward_choice_text
+        from database.crud import is_eligible_for_money_reward
+        from database.config import AsyncSessionLocal
+        
+        # Формируем имя реферала
+        referee_name = referee.first_name or ""
+        if referee.last_name:
+            referee_name += f" {referee.last_name}"
+        if referee.username:
+            referee_name = f"@{referee.username}"
+        if not referee_name.strip():
+            referee_name = f"ID: {referee.telegram_id}"
+        
+        # Рассчитываем бонус
+        loyalty_level = referrer.current_loyalty_level or 'none'
+        bonus_percent = get_bonus_percent_for_level(loyalty_level)
+        money_amount = calculate_referral_bonus(payment_amount, loyalty_level)
+        loyalty_emoji = get_loyalty_emoji(loyalty_level)
+        
+        # Проверяем право на денежные награды
+        async with AsyncSessionLocal() as session:
+            can_get_money = await is_eligible_for_money_reward(session, referrer.id)
+        
+        # Формируем текст
+        text = get_reward_choice_text(
+            referee_name,
+            money_amount,
+            bonus_percent,
+            loyalty_emoji,
+            can_get_money
+        )
+        
+        # Формируем клавиатуру
+        from utils.constants import REFERRAL_BONUS_DAYS
+        keyboard_buttons = []
+        
+        # Кнопка денег (если доступна)
+        if can_get_money:
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text=f"💰 Получить {money_amount:,}₽ на баланс",
+                    callback_data=f"ref_reward_money:{referee.id}"
+                )
+            ])
+        
+        # Кнопка дней (всегда доступна)
+        keyboard_buttons.append([
+            InlineKeyboardButton(
+                text=f"📅 Получить {REFERRAL_BONUS_DAYS} дней подписки",
+                callback_data=f"ref_reward_days:{referee.id}"
+            )
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        
+        await bot.send_message(
+            referrer.telegram_id,
+            text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+        webhook_logger.info(f"Отправлено уведомление о выборе награды рефереру {referrer.id}")
+        
+    except Exception as e:
+        webhook_logger.error(f"Ошибка при отправке уведомления о выборе награды: {e}", exc_info=True)
 
 
 @app.get("/")

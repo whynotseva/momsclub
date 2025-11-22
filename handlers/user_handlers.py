@@ -4488,3 +4488,150 @@ def register_user_handlers(dp):
 @user_router.callback_query(lambda c: c.data == "review_info")
 async def process_review_info(callback: types.CallbackQuery):
     await callback.answer("Это индикатор текущей позиции в галерее отзывов")
+
+
+# =============================================================================
+# РЕФЕРАЛЬНАЯ СИСТЕМА 2.0 - ОБРАБОТЧИКИ ВЫБОРА НАГРАДЫ
+# =============================================================================
+
+@user_router.callback_query(F.data.startswith("ref_reward_money:"))
+async def process_referral_reward_money(callback: types.CallbackQuery):
+    """Обработчик выбора денежной награды"""
+    try:
+        referee_id = int(callback.data.split(":")[1])
+        
+        async with AsyncSessionLocal() as session:
+            referrer = await get_user_by_telegram_id(session, callback.from_user.id)
+            referee = await get_user_by_id(session, referee_id)
+            
+            if not referrer or not referee:
+                await callback.answer("❌ Ошибка: пользователь не найден", show_alert=True)
+                return
+            
+            # Проверяем дубль
+            from database.models import ReferralReward
+            existing = await session.execute(
+                select(ReferralReward).where(
+                    ReferralReward.referrer_id == referrer.id,
+                    ReferralReward.referee_id == referee.id
+                )
+            )
+            if existing.scalar_one_or_none():
+                await callback.answer("❌ Награда уже получена", show_alert=True)
+                return
+            
+            # Проверяем право на деньги
+            from database.crud import is_eligible_for_money_reward
+            if not await is_eligible_for_money_reward(session, referrer.id):
+                await callback.answer("❌ Денежные награды недоступны", show_alert=True)
+                return
+            
+            # Получаем платеж
+            last_payment = await session.execute(
+                select(PaymentLog).where(
+                    PaymentLog.user_id == referee.id,
+                    PaymentLog.status == 'success'
+                ).order_by(PaymentLog.created_at.desc()).limit(1)
+            )
+            payment = last_payment.scalar_one_or_none()
+            if not payment:
+                await callback.answer("❌ Платеж не найден", show_alert=True)
+                return
+            
+            # Начисляем
+            from utils.referral_helpers import calculate_referral_bonus, get_bonus_percent_for_level
+            from database.crud import add_referral_balance, create_referral_reward
+            
+            loyalty_level = referrer.current_loyalty_level or 'none'
+            bonus_percent = get_bonus_percent_for_level(loyalty_level)
+            money_amount = calculate_referral_bonus(payment.amount, loyalty_level)
+            
+            if not await add_referral_balance(session, referrer.id, money_amount):
+                await callback.answer("❌ Ошибка начисления", show_alert=True)
+                return
+            
+            await create_referral_reward(
+                session, referrer.id, referee.id, payment.amount,
+                'money', money_amount, loyalty_level, bonus_percent
+            )
+            
+            await session.refresh(referrer)
+            
+            from utils.referral_messages import get_money_reward_success_text
+            text = get_money_reward_success_text(money_amount, referrer.referral_balance)
+            
+            await callback.message.edit_text(text, parse_mode="HTML")
+            await callback.answer("✅ Начислено!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в ref_reward_money: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@user_router.callback_query(F.data.startswith("ref_reward_days:"))
+async def process_referral_reward_days(callback: types.CallbackQuery):
+    """Обработчик выбора дней подписки"""
+    try:
+        referee_id = int(callback.data.split(":")[1])
+        
+        async with AsyncSessionLocal() as session:
+            referrer = await get_user_by_telegram_id(session, callback.from_user.id)
+            referee = await get_user_by_id(session, referee_id)
+            
+            if not referrer or not referee:
+                await callback.answer("❌ Ошибка: пользователь не найден", show_alert=True)
+                return
+            
+            # Проверяем дубль
+            from database.models import ReferralReward
+            existing = await session.execute(
+                select(ReferralReward).where(
+                    ReferralReward.referrer_id == referrer.id,
+                    ReferralReward.referee_id == referee.id
+                )
+            )
+            if existing.scalar_one_or_none():
+                await callback.answer("❌ Награда уже получена", show_alert=True)
+                return
+            
+            # Получаем платеж
+            last_payment = await session.execute(
+                select(PaymentLog).where(
+                    PaymentLog.user_id == referee.id,
+                    PaymentLog.status == 'success'
+                ).order_by(PaymentLog.created_at.desc()).limit(1)
+            )
+            payment = last_payment.scalar_one_or_none()
+            if not payment:
+                await callback.answer("❌ Платеж не найден", show_alert=True)
+                return
+            
+            # Начисляем дни
+            from utils.constants import REFERRAL_BONUS_DAYS
+            from database.crud import extend_subscription_days, create_referral_reward
+            from utils.referral_helpers import get_bonus_percent_for_level
+            
+            if not await extend_subscription_days(session, referrer.id, REFERRAL_BONUS_DAYS, reason=f"ref_{referee.id}"):
+                await callback.answer("❌ Ошибка начисления", show_alert=True)
+                return
+            
+            loyalty_level = referrer.current_loyalty_level or 'none'
+            bonus_percent = get_bonus_percent_for_level(loyalty_level)
+            
+            await create_referral_reward(
+                session, referrer.id, referee.id, payment.amount,
+                'days', REFERRAL_BONUS_DAYS, loyalty_level, bonus_percent
+            )
+            
+            subscription = await get_active_subscription(session, referrer.id)
+            end_date = subscription.end_date.strftime('%d.%m.%Y') if subscription else "н/д"
+            
+            from utils.referral_messages import get_days_reward_success_text
+            text = get_days_reward_success_text(REFERRAL_BONUS_DAYS, end_date)
+            
+            await callback.message.edit_text(text, parse_mode="HTML")
+            await callback.answer("✅ Начислено!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в ref_reward_days: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)

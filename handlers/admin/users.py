@@ -330,10 +330,20 @@ async def process_user_id(message: types.Message, state: FSMContext):
                 user_info_lines.append("")
                 user_info_lines.append("👥 Статус в группе: ❓ Не удалось проверить\n")
             
+            # Проверяем статус избранного
+            favorite = await get_favorite(session, message.from_user.id, user.telegram_id)
+            
+            # Если есть заметка - показываем
+            if favorite and favorite.note:
+                user_info_lines.append("")
+                user_info_lines.append(f"<b>⭐ Заметка (избранное):</b>\n{favorite.note}")
+            
             user_info = "\n".join(user_info_lines)
+            
+            user_is_favorite = favorite is not None
 
             # Новая структура: 4 раздела
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            keyboard_buttons = [
                 [InlineKeyboardButton(
                     text="💼 Управление подпиской",
                     callback_data=f"admin_subscription_menu:{user.telegram_id}"
@@ -349,12 +359,27 @@ async def process_user_id(message: types.Message, state: FSMContext):
                 [InlineKeyboardButton(
                     text="🛡️ Модерация",
                     callback_data=f"admin_moderation_menu:{user.telegram_id}"
-                )],
-                [InlineKeyboardButton(
-                    text="« Назад",
-                    callback_data="admin_back"
                 )]
-            ])
+            ]
+            
+            # Кнопка избранного
+            if user_is_favorite:
+                keyboard_buttons.append([InlineKeyboardButton(
+                    text="🗑️ Удалить из избранного",
+                    callback_data=f"admin_remove_favorite:{user.telegram_id}"
+                )])
+            else:
+                keyboard_buttons.append([InlineKeyboardButton(
+                    text="➕ Добавить в избранное",
+                    callback_data=f"admin_add_favorite:{user.telegram_id}"
+                )])
+            
+            keyboard_buttons.append([InlineKeyboardButton(
+                text="« Назад",
+                callback_data="admin_back"
+            )])
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
             await message.answer(user_info, reply_markup=keyboard, parse_mode="HTML")
         else:

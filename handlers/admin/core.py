@@ -72,23 +72,90 @@ async def process_admin_stats(callback: CallbackQuery):
             expired_subs = await get_expired_subscriptions_count(session)
             total_payments = await get_total_payments_amount(session)
             total_promo_uses = await get_total_promo_code_uses_count(session)
+            
+            # Получаем данные за последние периоды для трендов
+            from sqlalchemy import select, func
+            from database.models import User, Subscription, PaymentLog
+            from datetime import timedelta
+            
+            now = datetime.now()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            yesterday_start = today_start - timedelta(days=1)
+            week_ago = today_start - timedelta(days=7)
+            
+            # Новые пользователи за сегодня
+            result = await session.execute(
+                select(func.count(User.id)).where(User.created_at >= today_start)
+            )
+            new_users_today = result.scalar() or 0
+            
+            # Новые пользователи вчера
+            result = await session.execute(
+                select(func.count(User.id)).where(
+                    User.created_at >= yesterday_start,
+                    User.created_at < today_start
+                )
+            )
+            new_users_yesterday = result.scalar() or 0
+            
+            # Платежи за сегодня
+            result = await session.execute(
+                select(func.sum(PaymentLog.amount)).where(
+                    PaymentLog.payment_date >= today_start,
+                    PaymentLog.status == 'completed'
+                )
+            )
+            payments_today = result.scalar() or 0
+            
+            # Платежи за вчера
+            result = await session.execute(
+                select(func.sum(PaymentLog.amount)).where(
+                    PaymentLog.payment_date >= yesterday_start,
+                    PaymentLog.payment_date < today_start,
+                    PaymentLog.status == 'completed'
+                )
+            )
+            payments_yesterday = result.scalar() or 0
+            
+            # Расчет трендов
+            def format_trend(current, previous):
+                if previous == 0:
+                    if current > 0:
+                        return "🟢 ↗️ новые!"
+                    return ""
+                
+                delta = current - previous
+                if delta > 0:
+                    return f"🟢 ↗️ +{delta}"
+                elif delta < 0:
+                    return f"🔴 ↘️ {delta}"
+                else:
+                    return "⚪ ═ 0"
+            
+            new_users_trend = format_trend(new_users_today, new_users_yesterday)
+            payments_trend = format_trend(payments_today, payments_yesterday)
 
         conversion_rate = round((active_subs / total_users * 100), 1) if total_users > 0 else 0
         avg_payment = round(total_payments / (active_subs + expired_subs), 1) if (active_subs + expired_subs) > 0 else 0
         current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+        
         stats_text = f"""
-<b>📊 Статистика Mom's Club:</b>
+<b>📊 Статистика Mom's Club</b>
 
 👥 <b>Всего пользователей:</b> {total_users}
+   └ Новых за сегодня: {new_users_today} {new_users_trend}
+
 ✅ <b>Активных подписок:</b> {active_subs}
 ❌ <b>Истекших подписок:</b> {expired_subs}
-🎁 <b>Использовано промокодов:</b> {total_promo_uses} раз(а)
-💰 <b>Общая сумма платежей:</b> {total_payments} ₽
 
-📈 <b>Конверсия (активные/всего):</b> {conversion_rate}%
-💵 <b>Средний платеж:</b> {avg_payment} ₽
+💰 <b>Выручка за сегодня:</b> {payments_today:,.0f} ₽ {payments_trend}
+💵 <b>Всего платежей:</b> {total_payments:,.0f} ₽
+💳 <b>Средний чек:</b> {avg_payment:,.0f} ₽
 
-<i>Данные актуальны на: {current_time}</i>
+📈 <b>Конверсия:</b> {conversion_rate}%
+🎁 <b>Промокодов использовано:</b> {total_promo_uses}
+
+<i>⏰ Обновлено: {current_time}</i>
 """
 
         keyboard = InlineKeyboardMarkup(

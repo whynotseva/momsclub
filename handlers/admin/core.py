@@ -464,9 +464,9 @@ def _admin_menu_keyboard(user=None):
     
     # 📊 АНАЛИТИКА И ДАННЫЕ (только для can_view_revenue)
     if user and can_view_revenue(user):
-        # Заголовок секции с белыми кружками
+        # Заголовок секции с кренделями
         keyboard_buttons.append([
-            InlineKeyboardButton(text="⚪ АНАЛИТИКА И ДАННЫЕ ⚪", callback_data="ignore")
+            InlineKeyboardButton(text="🥨 АНАЛИТИКА И ДАННЫЕ 🥨", callback_data="ignore")
         ])
         keyboard_buttons.append([
             InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
@@ -475,7 +475,7 @@ def _admin_menu_keyboard(user=None):
     
     # 👤 ПОЛЬЗОВАТЕЛИ (для всех админов)
     keyboard_buttons.append([
-        InlineKeyboardButton(text="⚪ ПОЛЬЗОВАТЕЛИ ⚪", callback_data="ignore")
+        InlineKeyboardButton(text="🥨 ПОЛЬЗОВАТЕЛИ 🥨", callback_data="ignore")
     ])
     keyboard_buttons.append([
         InlineKeyboardButton(text="👤 Пользователи", callback_data="admin_users_menu"),
@@ -488,7 +488,7 @@ def _admin_menu_keyboard(user=None):
     # ⚙️ УПРАВЛЕНИЕ И НАСТРОЙКИ (только для can_manage_admins)
     if user and can_manage_admins(user):
         keyboard_buttons.append([
-            InlineKeyboardButton(text="⚪ УПРАВЛЕНИЕ И НАСТРОЙКИ ⚪", callback_data="ignore")
+            InlineKeyboardButton(text="🥨 УПРАВЛЕНИЕ И НАСТРОЙКИ 🥨", callback_data="ignore")
         ])
         keyboard_buttons.append([
             InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin_manage_promocodes"),
@@ -506,7 +506,7 @@ def _admin_menu_keyboard(user=None):
     
     # 📅 КАЛЕНДАРЬ И СРОКИ (для всех админов)
     keyboard_buttons.append([
-        InlineKeyboardButton(text="⚪ КАЛЕНДАРЬ И СРОКИ ⚪", callback_data="ignore")
+        InlineKeyboardButton(text="🥨 КАЛЕНДАРЬ И СРОКИ 🥨", callback_data="ignore")
     ])
     keyboard_buttons.append([
         InlineKeyboardButton(text="📅 Сроки подписок", callback_data="admin_subscription_dates"),

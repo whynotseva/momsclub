@@ -171,7 +171,7 @@ async def show_autorenew_enabled(callback: CallbackQuery):
                 button_text = f"{i}. {username_display}{subscription_info}"
                 keyboard_buttons.append([InlineKeyboardButton(
                     text=button_text,
-                    callback_data=f"admin_user_id:{usr.telegram_id}"
+                    callback_data=f"admin_user_info_from_autorenew:{usr.telegram_id}:enabled:{page}:{sort_order}"
                 )])
             
             # Кнопки сортировки
@@ -319,7 +319,7 @@ async def show_autorenew_disabled(callback: CallbackQuery):
                 button_text = f"{i}. {username_display}{subscription_info}"
                 keyboard_buttons.append([InlineKeyboardButton(
                     text=button_text,
-                    callback_data=f"admin_user_id:{usr.telegram_id}"
+                    callback_data=f"admin_user_info_from_autorenew:{usr.telegram_id}:disabled:{page}:{sort_order}"
                 )])
             
             # Кнопки сортировки

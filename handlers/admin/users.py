@@ -342,8 +342,8 @@ async def process_user_id(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-async def process_update_user_info(callback: CallbackQuery, telegram_id: int, return_to_lifetime_page: int = None, return_to_top_page: int = None, return_to_inactive_days: int = None, return_to_inactive_page: int = None):
-    logger.info(f"[admin_users] process_update_user_info начат для telegram_id: {telegram_id}, return_to_lifetime_page: {return_to_lifetime_page}, return_to_top_page: {return_to_top_page}")
+async def process_update_user_info(callback: CallbackQuery, telegram_id: int, return_to_lifetime_page: int = None, return_to_top_page: int = None, return_to_inactive_days: int = None, return_to_inactive_page: int = None, return_to_autorenew_source: str = None, return_to_autorenew_page: int = None, return_to_autorenew_sort: str = None):
+    logger.info(f"[admin_users] process_update_user_info начат для telegram_id: {telegram_id}, return_to_lifetime_page: {return_to_lifetime_page}, return_to_top_page: {return_to_top_page}, return_to_autorenew: {return_to_autorenew_source}")
     async with AsyncSessionLocal() as session:
         user = await get_user_by_telegram_id(session, telegram_id)
         if not user:
@@ -516,6 +516,7 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
                     f"admin_lifetime_subscriptions:{return_to_lifetime_page}" if return_to_lifetime_page is not None 
                     else f"admin_top_active_users:{return_to_top_page}" if return_to_top_page is not None
                     else f"admin_inactive_users:{return_to_inactive_days}:{return_to_inactive_page}" if return_to_inactive_days is not None
+                    else f"admin_autorenew_{return_to_autorenew_source}:{return_to_autorenew_page}:{return_to_autorenew_sort}" if return_to_autorenew_source is not None
                     else "admin_back"
                 )
             )]
@@ -1634,6 +1635,37 @@ async def process_user_info_from_inactive_list(callback: CallbackQuery):
         logger.info(f"[admin_users] admin_user_info_from_inactive успешно обработан для telegram_id: {telegram_id}")
     except Exception as e:
         logger.error(f"[admin_users] Ошибка в process_user_info_from_inactive для telegram_id {telegram_id}: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке информации о пользователе", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_user_info_from_autorenew:"))
+async def process_user_info_from_autorenew(callback: CallbackQuery):
+    """Обработчик клика на пользователя из списка автопродлений"""
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not is_admin(user):
+            await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+            return
+
+    try:
+        # Парсим: admin_user_info_from_autorenew:telegram_id:source:page:sort_order
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        source = parts[2]  # "enabled" или "disabled"
+        page = int(parts[3])
+        sort_order = parts[4]
+        logger.info(f"[admin_users] admin_user_info_from_autorenew вызван для telegram_id: {telegram_id}, source: {source}, page: {page}, sort: {sort_order}")
+    except (ValueError, IndexError) as e:
+        logger.error(f"[admin_users] Ошибка при парсинге admin_user_info_from_autorenew: {e}, data: {callback.data}")
+        await callback.answer("Ошибка: неверный формат данных", show_alert=True)
+        return
+
+    try:
+        await process_update_user_info(callback, telegram_id, return_to_autorenew_source=source, return_to_autorenew_page=page, return_to_autorenew_sort=sort_order)
+        await callback.answer()
+        logger.info(f"[admin_users] admin_user_info_from_autorenew успешно обработан для telegram_id: {telegram_id}")
+    except Exception as e:
+        logger.error(f"[admin_users] Ошибка в process_user_info_from_autorenew для telegram_id {telegram_id}: {e}", exc_info=True)
         await callback.answer("❌ Ошибка при загрузке информации о пользователе", show_alert=True)
 
 

@@ -49,14 +49,39 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     parts = callback.data.split(":")
     try:
         page = int(parts[1]) if len(parts) > 1 else 0
+        filter_type = parts[2] if len(parts) > 2 else "all"  # all, critical, urgent, warning, normal, lifetime
     except Exception:
         page = 0
+        filter_type = "all"
 
     await state.set_state(AdminSubscriptionStates.viewing_page)
-    await state.update_data(current_page=page)
+    await state.update_data(current_page=page, filter_type=filter_type)
 
     async with AsyncSessionLocal() as session:
         subscriptions_data = await get_sorted_active_subscriptions(session)
+    
+    # Фильтрация
+    now = datetime.now()
+    if filter_type != "all":
+        filtered_data = []
+        for user, subscription in subscriptions_data:
+            from utils.helpers import is_lifetime_subscription
+            
+            if filter_type == "lifetime" and is_lifetime_subscription(subscription):
+                filtered_data.append((user, subscription))
+            elif filter_type != "lifetime" and not is_lifetime_subscription(subscription):
+                days_left = (subscription.end_date - now).days
+                
+                if filter_type == "critical" and days_left <= 3:
+                    filtered_data.append((user, subscription))
+                elif filter_type == "urgent" and 4 <= days_left <= 7:
+                    filtered_data.append((user, subscription))
+                elif filter_type == "warning" and 8 <= days_left <= 14:
+                    filtered_data.append((user, subscription))
+                elif filter_type == "normal" and days_left >= 15:
+                    filtered_data.append((user, subscription))
+        
+        subscriptions_data = filtered_data
 
     total_items = len(subscriptions_data)
     total_pages = max(1, (total_items + SUBSCRIPTIONS_PAGE_SIZE - 1) // SUBSCRIPTIONS_PAGE_SIZE)
@@ -71,14 +96,59 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
 
     now = datetime.now()
     
+    # Заголовок с активным фильтром
+    filter_names = {
+        "all": "Все",
+        "critical": "🔴 Критично (1-3д)",
+        "urgent": "🟠 Срочно (4-7д)",
+        "warning": "🟡 Внимание (8-14д)",
+        "normal": "🟢 Норма (15+д)",
+        "lifetime": "♾️ Пожизненные"
+    }
+    
     message_text = f"<b>📅 Активные подписки</b> (стр. {page+1}/{total_pages})\n"
-    message_text += f"Всего: {total_items}\n\n"
+    message_text += f"Фильтр: {filter_names.get(filter_type, 'Все')}\n"
+    message_text += f"Найдено: {total_items}\n\n"
     message_text += "<i>⚡ Быстрые действия под каждым пользователем</i>"
     
     inline_kb = []
     
+    # Кнопки фильтров
+    filter_buttons_row1 = [
+        InlineKeyboardButton(
+            text="Все" if filter_type != "all" else "✅ Все",
+            callback_data=f"admin_subscription_dates:0:all"
+        ),
+        InlineKeyboardButton(
+            text="🔴 1-3д" if filter_type != "critical" else "✅ 1-3д",
+            callback_data=f"admin_subscription_dates:0:critical"
+        ),
+        InlineKeyboardButton(
+            text="🟠 4-7д" if filter_type != "urgent" else "✅ 4-7д",
+            callback_data=f"admin_subscription_dates:0:urgent"
+        )
+    ]
+    
+    filter_buttons_row2 = [
+        InlineKeyboardButton(
+            text="🟡 8-14д" if filter_type != "warning" else "✅ 8-14д",
+            callback_data=f"admin_subscription_dates:0:warning"
+        ),
+        InlineKeyboardButton(
+            text="🟢 15+д" if filter_type != "normal" else "✅ 15+д",
+            callback_data=f"admin_subscription_dates:0:normal"
+        ),
+        InlineKeyboardButton(
+            text="♾️" if filter_type != "lifetime" else "✅ ♾️",
+            callback_data=f"admin_subscription_dates:0:lifetime"
+        )
+    ]
+    
+    inline_kb.append(filter_buttons_row1)
+    inline_kb.append(filter_buttons_row2)
+    
     if not current_items:
-        message_text = "<b>📅 Активные подписки</b>\n\nАктивных подписок не найдено."
+        message_text = f"<b>📅 Активные подписки</b>\n\nПо фильтру \"{filter_names.get(filter_type)}\" ничего не найдено."
     else:
         # Формируем кнопки для каждого пользователя
         for i, (user, subscription) in enumerate(current_items, 1):
@@ -122,18 +192,20 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
                 InlineKeyboardButton(text="⭐", callback_data=f"sub_fav:{user.telegram_id}:{page}")
             ]
             inline_kb.append(action_buttons)
+    
+    # Навигация с сохранением фильтра
     pagination = []
     if page > 0:
-        pagination.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin_subscription_dates:{page-1}"))
+        pagination.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin_subscription_dates:{page-1}:{filter_type}"))
     if page < total_pages - 1:
-        pagination.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"admin_subscription_dates:{page+1}"))
+        pagination.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"admin_subscription_dates:{page+1}:{filter_type}"))
     if pagination:
         inline_kb.append(pagination)
     if total_pages > 1:
         inline_kb.append([InlineKeyboardButton(text=f"Страница {page+1}/{total_pages}", callback_data="ignore")])
 
     inline_kb.append([InlineKeyboardButton(text="📊 Экспорт в Excel", callback_data="admin_export_subscriptions")])
-    inline_kb.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=f"admin_subscription_dates:{page}")])
+    inline_kb.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=f"admin_subscription_dates:{page}:{filter_type}")])
     inline_kb.append([InlineKeyboardButton(text="« Назад", callback_data="admin_back")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=inline_kb)

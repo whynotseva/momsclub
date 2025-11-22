@@ -2729,27 +2729,65 @@ async def process_referral_program(callback: types.CallbackQuery):
         bot_username = (await callback.bot.get_me()).username
         referral_link = f"https://t.me/{bot_username}?start=ref_{referral_code}"
         
-        # Создаем клавиатуру с кнопкой "Поделиться"
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="📤 Поделиться ссылкой",
-                    switch_inline_query=f"Присоединяйся к Mom's Club по моей ссылке! {referral_link}"
-                )],
-                [InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")]
-            ]
+        # Получаем статистику рефералов
+        from sqlalchemy import select, func as sql_func
+        from database.models import User as UserModel
+        
+        # Считаем всех приглашенных
+        total_referrals_query = select(sql_func.count(UserModel.id)).where(UserModel.referrer_id == user.id)
+        total_referrals = await session.scalar(total_referrals_query) or 0
+        
+        # Получаем данные для текста
+        from utils.referral_helpers import get_loyalty_name, get_bonus_percent_for_level
+        from utils.constants import MIN_WITHDRAWAL_AMOUNT
+        
+        balance = user.referral_balance or 0
+        total_earned = user.total_earned_referral or 0
+        total_paid = user.total_referrals_paid or 0
+        loyalty_level = user.current_loyalty_level or 'none'
+        level_name = get_loyalty_name(loyalty_level)
+        bonus_percent = get_bonus_percent_for_level(loyalty_level)
+        
+        # Формируем текст через helper
+        from utils.referral_messages import get_referral_program_text
+        text = get_referral_program_text(
+            balance,
+            total_earned,
+            total_referrals,
+            total_paid,
+            level_name,
+            bonus_percent,
+            referral_link
         )
         
-        # Отправляем новое сообщение вместо редактирования
+        # Создаем клавиатуру
+        keyboard_buttons = [
+            [InlineKeyboardButton(
+                text="📤 Поделиться ссылкой",
+                switch_inline_query=f"Присоединяйся к Mom's Club по моей ссылке! {referral_link}"
+            )]
+        ]
+        
+        # Кнопка вывода (если баланс >= минимума)
+        if balance >= MIN_WITHDRAWAL_AMOUNT:
+            keyboard_buttons.append([
+                InlineKeyboardButton(text="💸 Вывести средства", callback_data="ref_withdraw")
+            ])
+        
+        # Кнопка истории
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="📊 История начислений", callback_data="ref_history")
+        ])
+        
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="« Назад в профиль", callback_data="back_to_profile")
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        
+        # Отправляем новое сообщение
         await callback.message.answer(
-            "🤝 <b>Реферальная программа</b>\n\n"
-            "Приглашайте друзей и получайте бонусные дни подписки!\n\n"
-            "📱 <b>Как это работает:</b>\n"
-            "1️⃣ Отправьте свою реферальную ссылку друзьям\n"
-            "2️⃣ Когда друг перейдет по ссылке и оформит подписку\n"
-            "3️⃣ Вы и ваш друг получите <b>+7 дней</b> к вашим подпискам 🎁\n\n"
-            f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{referral_link}</code>\n\n"
-            "Нажмите кнопку ниже, чтобы поделиться ссылкой! 💌",
+            text,
             reply_markup=keyboard,
             parse_mode="HTML"
         )
@@ -4634,4 +4672,35 @@ async def process_referral_reward_days(callback: types.CallbackQuery):
             
     except Exception as e:
         logger.error(f"Ошибка в ref_reward_days: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@user_router.callback_query(F.data == "ref_history")
+async def process_referral_history(callback: types.CallbackQuery):
+    """Обработчик просмотра истории реферальных начислений"""
+    try:
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            # Получаем историю наград
+            from database.crud import get_referral_rewards
+            rewards = await get_referral_rewards(session, user.id, limit=10)
+            
+            # Формируем текст через helper
+            from utils.referral_messages import get_referral_history_text
+            text = get_referral_history_text(rewards)
+            
+            # Клавиатура
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Назад", callback_data="referral_program")]
+            ])
+            
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в ref_history: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка", show_alert=True)

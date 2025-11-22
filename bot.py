@@ -24,6 +24,7 @@ from handlers.admin import (
     register_admin_core_handlers,
     register_admin_birthdays_handlers,
     register_admin_admins_handlers,
+    register_autorenew_handlers,
 )
 from handlers.user_handlers import register_user_handlers
 from handlers.message_handlers import register_message_handlers
@@ -1531,6 +1532,8 @@ async def main():
     register_admin_referrals_handlers(dp)
     # Модуль сроков подписок
     register_admin_subscriptions_handlers(dp)
+    # Модуль управления автопродлениями
+    register_autorenew_handlers(dp)
     # Модуль промокодов
     register_admin_promocodes_handlers(dp)
     # Модуль рассылки сообщений удалён из админки по требованиям

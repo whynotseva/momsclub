@@ -1,5 +1,6 @@
 from .referrals import register_admin_referrals_handlers
 from .subscriptions import register_admin_subscriptions_handlers
+from .autorenew import register_autorenew_handlers
 from .promocodes import register_admin_promocodes_handlers
 from .loyalty import register_admin_loyalty_handlers
 from .cancellations import register_admin_cancellations_handlers

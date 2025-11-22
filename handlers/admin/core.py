@@ -438,6 +438,7 @@ def _admin_menu_keyboard(user=None):
         keyboard_buttons.append([InlineKeyboardButton(text="🎟️ Управление промокодами", callback_data="admin_manage_promocodes")])
     
     keyboard_buttons.append([InlineKeyboardButton(text="📅 Сроки подписок", callback_data="admin_subscription_dates")])
+    keyboard_buttons.append([InlineKeyboardButton(text="🔄 Автопродления", callback_data="admin_autorenew_menu")])
     
     keyboard_buttons.append([InlineKeyboardButton(text="🎂 Дни рождения пользователей", callback_data="admin_birthdays:0")])
     keyboard_buttons.append([InlineKeyboardButton(text="🚫 Заявки на отмену автопродления", callback_data="admin_cancellation_requests")])

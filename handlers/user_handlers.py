@@ -105,6 +105,12 @@ class PaymentDataStates(StatesGroup):
 class CancelRenewalStates(StatesGroup):
     waiting_for_custom_reason = State()
 
+# --- Состояния FSM для вывода средств ---
+class WithdrawalStates(StatesGroup):
+    waiting_card_number = State()
+    waiting_phone_number = State()
+    waiting_confirmation = State()
+
 # --- Конец состояний FSM ---
 
 # Создаем логгер
@@ -4704,3 +4710,246 @@ async def process_referral_history(callback: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка в ref_history: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+# =============================================================================
+# ВЫВОД РЕФЕРАЛЬНЫХ СРЕДСТВ
+# =============================================================================
+
+@user_router.callback_query(F.data == "ref_withdraw")
+async def start_withdrawal(callback: types.CallbackQuery):
+    """Начало процесса вывода средств"""
+    try:
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            from utils.constants import MIN_WITHDRAWAL_AMOUNT
+            
+            if user.referral_balance < MIN_WITHDRAWAL_AMOUNT:
+                await callback.answer(
+                    f"❌ Минимальная сумма для вывода: {MIN_WITHDRAWAL_AMOUNT}₽",
+                    show_alert=True
+                )
+                return
+            
+            # Формируем текст
+            from utils.referral_messages import get_withdrawal_start_text
+            text = get_withdrawal_start_text(user.referral_balance, MIN_WITHDRAWAL_AMOUNT)
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Банковская карта", callback_data="withdraw_card")],
+                [InlineKeyboardButton(text="📱 СБП (по номеру телефона)", callback_data="withdraw_sbp")],
+                [InlineKeyboardButton(text="« Отмена", callback_data="referral_program")]
+            ])
+            
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в start_withdrawal: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@user_router.callback_query(F.data == "withdraw_card")
+async def choose_card_withdrawal(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор вывода на карту"""
+    try:
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            await state.update_data(payment_method="card", user_balance=user.referral_balance)
+        
+        await callback.message.delete()
+        await callback.message.answer(
+            "💳 <b>Вывод на банковскую карту</b>\n\n"
+            "Введите номер карты (16 цифр):\n\n"
+            "Например: <code>1234567812345678</code>\n\n"
+            "Или нажмите /cancel для отмены",
+            parse_mode="HTML"
+        )
+        await state.set_state(WithdrawalStates.waiting_card_number)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в choose_card_withdrawal: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@user_router.message(WithdrawalStates.waiting_card_number)
+async def process_card_number(message: types.Message, state: FSMContext):
+    """Обработка ввода номера карты"""
+    try:
+        card_number = message.text.strip().replace(" ", "")
+        
+        # Валидация
+        from utils.referral_helpers import validate_card_number, mask_card_number
+        is_valid, error_msg = validate_card_number(card_number)
+        
+        if not is_valid:
+            await message.answer(f"❌ {error_msg}\n\nПопробуйте еще раз:")
+            return
+        
+        # Сохраняем и показываем подтверждение
+        data = await state.get_data()
+        balance = data['user_balance']
+        masked = mask_card_number(card_number)
+        
+        await state.update_data(card_number=card_number, masked_details=masked)
+        
+        from utils.referral_messages import get_withdrawal_confirmation_text
+        text = get_withdrawal_confirmation_text(balance, masked, "card")
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_withdrawal")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdrawal")]
+        ])
+        
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        await state.set_state(WithdrawalStates.waiting_confirmation)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в process_card_number: {e}", exc_info=True)
+        await message.answer("❌ Произошла ошибка. Попробуйте снова или /cancel")
+
+
+@user_router.callback_query(F.data == "withdraw_sbp")
+async def choose_sbp_withdrawal(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор вывода через СБП"""
+    try:
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            await state.update_data(payment_method="sbp", user_balance=user.referral_balance)
+        
+        await callback.message.delete()
+        await callback.message.answer(
+            "📱 <b>Вывод через СБП</b>\n\n"
+            "Введите номер телефона (11 цифр):\n\n"
+            "Например: <code>79001234567</code>\n\n"
+            "Или нажмите /cancel для отмены",
+            parse_mode="HTML"
+        )
+        await state.set_state(WithdrawalStates.waiting_phone_number)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в choose_sbp_withdrawal: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@user_router.message(WithdrawalStates.waiting_phone_number)
+async def process_phone_number(message: types.Message, state: FSMContext):
+    """Обработка ввода номера телефона для СБП"""
+    try:
+        phone = message.text.strip().replace("+", "").replace(" ", "").replace("-", "")
+        
+        # Валидация
+        from utils.referral_helpers import validate_phone_number, mask_phone_number
+        is_valid, error_msg = validate_phone_number(phone)
+        
+        if not is_valid:
+            await message.answer(f"❌ {error_msg}\n\nПопробуйте еще раз:")
+            return
+        
+        # Сохраняем и показываем подтверждение
+        data = await state.get_data()
+        balance = data['user_balance']
+        phone_formatted = f"+{phone}"
+        masked = mask_phone_number(phone_formatted)
+        
+        await state.update_data(phone_number=phone_formatted, masked_details=masked)
+        
+        from utils.referral_messages import get_withdrawal_confirmation_text
+        text = get_withdrawal_confirmation_text(balance, masked, "sbp")
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_withdrawal")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdrawal")]
+        ])
+        
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        await state.set_state(WithdrawalStates.waiting_confirmation)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в process_phone_number: {e}", exc_info=True)
+        await message.answer("❌ Произошла ошибка. Попробуйте снова или /cancel")
+
+
+@user_router.callback_query(F.data == "confirm_withdrawal")
+async def confirm_withdrawal(callback: types.CallbackQuery, state: FSMContext):
+    """Подтверждение вывода средств"""
+    try:
+        data = await state.get_data()
+        payment_method = data.get('payment_method')
+        payment_details = data.get('card_number') or data.get('phone_number')
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            
+            # Создаем заявку
+            from database.crud import create_withdrawal_request
+            success = await create_withdrawal_request(
+                session,
+                user.id,
+                user.referral_balance,
+                payment_method,
+                payment_details
+            )
+            
+            if success:
+                from utils.referral_messages import get_withdrawal_request_created_text
+                text = get_withdrawal_request_created_text(
+                    user.referral_balance,
+                    data.get('masked_details', payment_details)
+                )
+                
+                await callback.message.edit_text(text, parse_mode="HTML")
+                
+                # Уведомляем админов
+                await notify_admins_about_withdrawal(callback.bot, user, payment_method, payment_details)
+            else:
+                await callback.answer("❌ Ошибка при создании заявки", show_alert=True)
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_withdrawal: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@user_router.callback_query(F.data == "cancel_withdrawal")
+async def cancel_withdrawal(callback: types.CallbackQuery, state: FSMContext):
+    """Отмена вывода"""
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ Вывод отменен.\n\nВы можете вернуться в реферальную программу.",
+        parse_mode="HTML"
+    )
+
+
+async def notify_admins_about_withdrawal(bot, user, payment_method, payment_details):
+    """Уведомляет админов о новой заявке на вывод"""
+    try:
+        from utils.referral_messages import get_admin_withdrawal_notification_text
+        from utils.admin_permissions import get_all_admin_ids
+        
+        user_name = user.first_name or "Без имени"
+        if user.username:
+            user_name = f"@{user.username}"
+        
+        text = get_admin_withdrawal_notification_text(
+            user_name,
+            user.telegram_id,
+            user.referral_balance,
+            payment_details,
+            payment_method
+        )
+        
+        admin_ids = await get_all_admin_ids()
+        for admin_id in admin_ids:
+            try:
+                await bot.send_message(admin_id, text, parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+                
+    except Exception as e:
+        logger.error(f"Ошибка в notify_admins_about_withdrawal: {e}", exc_info=True)

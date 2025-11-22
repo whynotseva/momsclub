@@ -140,12 +140,13 @@ async def show_referral_history(callback: CallbackQuery):
             # Объединяем награды и списания в один список
             all_operations = []
             
-            # Добавляем награды
-            for reward in rewards:
+            # Добавляем награды (rewards это список кортежей (reward, referee))
+            for reward, referee in rewards:
                 all_operations.append({
                     'type': 'reward',
                     'date': reward.created_at,
-                    'data': reward
+                    'data': reward,
+                    'referee': referee
                 })
             
             # Добавляем списания
@@ -167,7 +168,7 @@ async def show_referral_history(callback: CallbackQuery):
                     
                     if op['type'] == 'reward':
                         reward = op['data']
-                        referee = await get_user_by_id(session, reward.referee_id)
+                        referee = op['referee']
                         referee_name = referee.first_name if referee else "Неизвестно"
                         if referee and referee.username:
                             referee_name = f"@{referee.username}"

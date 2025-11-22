@@ -110,10 +110,7 @@ async def show_favorites_list(callback: CallbackQuery):
                 # Эмодзи статуса из формата (первый символ)
                 status_emoji = sub_status[0] if sub_status else "❌"
                 
-                # Заметка если есть
-                note_text = f"\n   💬 {favorite.note}" if favorite.note else ""
-                
-                button_text = f"{status_emoji} {i}. {user_name}{note_text}"
+                button_text = f"{status_emoji} {i}. {user_name}"
                 keyboard_buttons.append([InlineKeyboardButton(
                     text=button_text,
                     callback_data=f"admin_favorite_user:{user.telegram_id}:{page}"
@@ -168,7 +165,29 @@ async def show_favorite_user_actions(callback: CallbackQuery):
         user_telegram_id = int(parts[1])
         return_page = int(parts[2]) if len(parts) > 2 else 0
         
-        text = "⭐ <b>Действия с избранным</b>\n\nВыберите действие:"
+        # Получаем заметку
+        async with AsyncSessionLocal() as session:
+            from database.crud import get_favorite, get_user_by_telegram_id
+            
+            favorite = await get_favorite(session, callback.from_user.id, user_telegram_id)
+            user = await get_user_by_telegram_id(session, user_telegram_id)
+            
+            user_name = user.first_name or ""
+            if user.last_name:
+                user_name += f" {user.last_name}"
+            if user.username:
+                user_name += f" (@{user.username})"
+            if not user_name.strip():
+                user_name = f"ID: {user.telegram_id}"
+        
+        text = f"⭐ <b>Действия с избранным</b>\n\n<b>Пользователь:</b> {user_name}\n"
+        
+        if favorite and favorite.note:
+            text += f"\n<b>💬 Заметка:</b>\n{favorite.note}\n"
+        else:
+            text += "\n<i>Заметка не указана</i>\n"
+        
+        text += "\nВыберите действие:"
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
@@ -181,7 +200,7 @@ async def show_favorite_user_actions(callback: CallbackQuery):
             )],
             [InlineKeyboardButton(
                 text="🗑️ Удалить из избранного",
-                callback_data=f"admin_remove_favorite:{user_telegram_id}:{return_page}"
+                callback_data=f"admin_remove_favorite_confirm:{user_telegram_id}:{return_page}"
             )],
             [InlineKeyboardButton(
                 text="« Назад к списку",
@@ -197,9 +216,9 @@ async def show_favorite_user_actions(callback: CallbackQuery):
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
-@favorites_router.callback_query(F.data.startswith("admin_remove_favorite:"))
-async def remove_favorite_handler(callback: CallbackQuery):
-    """Удаляет пользователя из избранного"""
+@favorites_router.callback_query(F.data.startswith("admin_remove_favorite_confirm:"))
+async def remove_favorite_confirm_handler(callback: CallbackQuery):
+    """Удаляет пользователя из избранного (из списка избранных)"""
     try:
         parts = callback.data.split(":")
         user_telegram_id = int(parts[1])
@@ -222,7 +241,7 @@ async def remove_favorite_handler(callback: CallbackQuery):
         await show_favorites_list(callback)
         
     except Exception as e:
-        logger.error(f"Ошибка в remove_favorite_handler: {e}", exc_info=True)
+        logger.error(f"Ошибка в remove_favorite_confirm_handler: {e}", exc_info=True)
         await callback.answer("❌ Ошибка при удалении", show_alert=True)
 
 

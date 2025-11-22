@@ -547,13 +547,13 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
         # Кнопка избранного
         if user_is_favorite:
             keyboard_buttons.append([InlineKeyboardButton(
-                text="⭐ В избранном",
-                callback_data=f"admin_toggle_favorite:{user.telegram_id}"
+                text="🗑️ Удалить из избранного",
+                callback_data=f"admin_remove_favorite:{user.telegram_id}"
             )])
         else:
             keyboard_buttons.append([InlineKeyboardButton(
-                text="⭐ Добавить в избранное",
-                callback_data=f"admin_toggle_favorite:{user.telegram_id}"
+                text="➕ Добавить в избранное",
+                callback_data=f"admin_add_favorite:{user.telegram_id}"
             )])
         
         # Кнопка "Назад"
@@ -2139,9 +2139,50 @@ async def show_moderation_menu(callback: CallbackQuery):
         await callback.answer("❌ Ошибка при открытии меню", show_alert=True)
 
 
-@users_router.callback_query(F.data.startswith("admin_toggle_favorite:"))
-async def toggle_favorite_handler(callback: CallbackQuery, state: FSMContext):
-    """Переключает статус избранного для пользователя"""
+@users_router.callback_query(F.data.startswith("admin_add_favorite:"))
+async def add_favorite_handler(callback: CallbackQuery, state: FSMContext):
+    """Добавляет пользователя в избранное"""
+    try:
+        user_telegram_id = int(callback.data.split(":")[1])
+        
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not is_admin(admin):
+                await callback.answer("У вас нет доступа к этой функции", show_alert=True)
+                return
+        
+        # Добавляем в избранное - спрашиваем заметку
+        await state.set_state(AdminStates.waiting_for_favorite_note)
+        await state.update_data(user_telegram_id=user_telegram_id)
+        
+        text = (
+            "✏️ <b>Добавление в избранное</b>\n\n"
+            "Введите заметку для этого пользователя (необязательно):\n\n"
+            "<i>Примеры:\n"
+            "• На контроле - истекает подписка\n"
+            "• Активная в группе\n"
+            "• Постоянный клиент</i>\n\n"
+            "Или отправьте /skip чтобы пропустить"
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="Пропустить",
+                callback_data=f"admin_add_favorite_no_note:{user_telegram_id}"
+            )]
+        ])
+        
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в add_favorite_handler: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@users_router.callback_query(F.data.startswith("admin_remove_favorite:"))
+async def remove_favorite_handler(callback: CallbackQuery):
+    """Удаляет пользователя из избранного"""
     try:
         user_telegram_id = int(callback.data.split(":")[1])
         
@@ -2151,48 +2192,19 @@ async def toggle_favorite_handler(callback: CallbackQuery, state: FSMContext):
                 await callback.answer("У вас нет доступа к этой функции", show_alert=True)
                 return
             
-            # Проверяем текущий статус
-            is_fav = await is_favorite(session, callback.from_user.id, user_telegram_id)
-            
-            if is_fav:
-                # Удаляем из избранного
-                success = await remove_from_favorites(session, callback.from_user.id, user_telegram_id)
-                if success:
-                    await callback.answer("✅ Удалено из избранного", show_alert=True)
-                else:
-                    await callback.answer("❌ Ошибка при удалении", show_alert=True)
-                    return
+            # Удаляем из избранного
+            success = await remove_from_favorites(session, callback.from_user.id, user_telegram_id)
+            if success:
+                await callback.answer("✅ Удалено из избранного", show_alert=True)
             else:
-                # Добавляем в избранное - спрашиваем заметку
-                await state.set_state(AdminStates.waiting_for_favorite_note)
-                await state.update_data(user_telegram_id=user_telegram_id)
-                
-                text = (
-                    "✏️ <b>Добавление в избранное</b>\n\n"
-                    "Введите заметку для этого пользователя (необязательно):\n\n"
-                    "<i>Примеры:\n"
-                    "• На контроле - истекает подписка\n"
-                    "• Активная в группе\n"
-                    "• Постоянный клиент</i>\n\n"
-                    "Или отправьте /skip чтобы пропустить"
-                )
-                
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(
-                        text="Пропустить",
-                        callback_data=f"admin_add_favorite_no_note:{user_telegram_id}"
-                    )]
-                ])
-                
-                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-                await callback.answer()
+                await callback.answer("❌ Ошибка при удалении", show_alert=True)
                 return
         
         # Обновляем отображение
         await process_update_user_info(callback, user_telegram_id)
         
     except Exception as e:
-        logger.error(f"Ошибка в toggle_favorite_handler: {e}", exc_info=True)
+        logger.error(f"Ошибка в remove_favorite_handler: {e}", exc_info=True)
         await callback.answer("❌ Ошибка", show_alert=True)
 
 

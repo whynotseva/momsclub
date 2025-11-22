@@ -69,6 +69,7 @@ from database.crud import (
     send_badge_notification,
     has_user_badge,
     is_favorite,
+    get_favorite,
     add_to_favorites,
     remove_from_favorites,
 )
@@ -510,10 +511,18 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
             user_info_lines.append("")
             user_info_lines.append("<b>🏆 Достижения:</b> Нет")
         
+        # Проверяем, находится ли пользователь в избранном и получаем заметку
+        favorite = await get_favorite(session, callback.from_user.id, user.telegram_id)
+        
+        # Если пользователь в избранном и есть заметка - показываем её
+        if favorite and favorite.note:
+            user_info_lines.append("")
+            user_info_lines.append(f"<b>⭐ Заметка (избранное):</b>\n{favorite.note}")
+        
         user_info = "\n".join(user_info_lines)
 
-        # Проверяем, находится ли пользователь в избранном
-        user_is_favorite = await is_favorite(session, callback.from_user.id, user.telegram_id)
+        # Проверяем статус избранного
+        user_is_favorite = favorite is not None
 
         # Новая структура: 4 раздела
         keyboard_buttons = [
@@ -543,7 +552,7 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
             )])
         else:
             keyboard_buttons.append([InlineKeyboardButton(
-                text="➕ Добавить в избранное",
+                text="⭐ Добавить в избранное",
                 callback_data=f"admin_toggle_favorite:{user.telegram_id}"
             )])
         

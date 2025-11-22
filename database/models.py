@@ -385,6 +385,7 @@ class ReferralReward(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     referrer_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # Кто получил награду
     referee_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # Кто оплатил (приглашенный)
+    payment_id = Column(Integer, ForeignKey("payment_logs.id", ondelete="SET NULL"), nullable=True)  # За какой платеж (НОВОЕ!)
     payment_amount = Column(Integer, nullable=False)  # Сумма покупки реферала в рублях
     reward_type = Column(String(20), nullable=False)  # 'money' или 'days'
     reward_amount = Column(Integer, nullable=False)  # Количество рублей или дней
@@ -395,6 +396,7 @@ class ReferralReward(Base):
     # Relationships
     referrer = relationship("User", foreign_keys=[referrer_id], backref="rewards_given")
     referee = relationship("User", foreign_keys=[referee_id], backref="rewards_received")
+    payment = relationship("PaymentLog", foreign_keys=[payment_id])
     
     def __repr__(self):
         return f"<ReferralReward {self.id} for referrer {self.referrer_id}>"

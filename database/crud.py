@@ -4139,7 +4139,8 @@ async def create_referral_reward(
     reward_type: str,
     reward_amount: int,
     loyalty_level: str,
-    bonus_percent: int
+    bonus_percent: int,
+    payment_id: int = None
 ) -> bool:
     """
     Создает запись о реферальной награде
@@ -4153,6 +4154,7 @@ async def create_referral_reward(
         reward_amount: Размер награды (рубли или дни)
         loyalty_level: Уровень лояльности реферера
         bonus_percent: Процент бонуса
+        payment_id: ID платежа (для отслеживания постоянных выплат)
         
     Returns:
         True если успешно, False при ошибке
@@ -4163,6 +4165,7 @@ async def create_referral_reward(
         reward = ReferralReward(
             referrer_id=referrer_id,
             referee_id=referee_id,
+            payment_id=payment_id,
             payment_amount=payment_amount,
             reward_type=reward_type,
             reward_amount=reward_amount,

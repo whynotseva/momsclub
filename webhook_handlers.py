@@ -226,23 +226,29 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
                 )
                 webhook_logger.info(f"Сохранен payment_method_id для пользователя {user.id}")
         
-        # Обработка реферального бонуса (Реферальная система 2.0)
+        # Обработка реферального бонуса (Реферальная система 3.0)
         # ИЗМЕНЕНО: Теперь реферер получает процент от КАЖДОЙ оплаты реферала!
         if user.referrer_id:
             referrer = await get_user_by_id(session, user.referrer_id)
             if referrer:
-                payment_logger.info(f"Платеж пользователя {user.id} (реферал). Отправляем выбор награды рефереру {referrer.id}")
+                # ВАЖНО: Проверяем, есть ли у реферера активная подписка
+                referrer_has_subscription = await has_active_subscription(session, referrer.id)
                 
-                # Отправляем уведомление с выбором награды (деньги или дни)
-                # Реферер получает процент от КАЖДОЙ оплаты своего реферала!
-                await send_referral_reward_choice(
-                    bot,
-                    referrer,
-                    user,
-                    payment_log_entry.amount
-                )
-                
-                payment_logger.info(f"Уведомление о выборе награды отправлено рефереру {referrer.id}")
+                if not referrer_has_subscription:
+                    payment_logger.info(f"Реферер {referrer.id} не имеет активной подписки. Пропускаем начисление.")
+                else:
+                    payment_logger.info(f"Платеж пользователя {user.id} (реферал). Отправляем выбор награды рефереру {referrer.id}")
+                    
+                    # Отправляем уведомление с выбором награды (деньги или дни)
+                    # Реферер получает процент от КАЖДОЙ оплаты своего реферала!
+                    await send_referral_reward_choice(
+                        bot,
+                        referrer,
+                        user,
+                        payment_log_entry.amount
+                    )
+                    
+                    payment_logger.info(f"Уведомление о выборе награды отправлено рефереру {referrer.id}")
         
         # Уведомление админам
         await send_payment_notification_to_admins(

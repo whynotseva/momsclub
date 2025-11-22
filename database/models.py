@@ -43,6 +43,11 @@ class User(Base):
     # Поле для группы администратора
     admin_group = Column(String(50), nullable=True)  # 'creator', 'developer', 'curator' или NULL для обычных пользователей
     
+    # Реферальная система 2.0
+    referral_balance = Column(Integer, default=0)  # Баланс реферальных средств в рублях
+    total_referrals_paid = Column(Integer, default=0)  # Количество рефералов, оплативших подписку
+    total_earned_referral = Column(Integer, default=0)  # Всего заработано реферальных средств за всё время
+    
     # Отношение к подпискам
     subscriptions = relationship("Subscription", back_populates="user")
     
@@ -371,3 +376,48 @@ class FavoriteUser(Base):
     
     def __repr__(self):
         return f"<FavoriteUser admin={self.admin_telegram_id} user={self.user_telegram_id}>"
+
+
+class ReferralReward(Base):
+    """Модель истории реферальных наград"""
+    __tablename__ = "referral_rewards"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    referrer_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # Кто получил награду
+    referee_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # Кто оплатил (приглашенный)
+    payment_amount = Column(Integer, nullable=False)  # Сумма покупки реферала в рублях
+    reward_type = Column(String(20), nullable=False)  # 'money' или 'days'
+    reward_amount = Column(Integer, nullable=False)  # Количество рублей или дней
+    loyalty_level = Column(String(20), nullable=True)  # Уровень лояльности на момент выбора
+    bonus_percent = Column(Integer, nullable=False)  # Процент бонуса на момент выбора
+    created_at = Column(DateTime, server_default=func.now())
+    
+    # Relationships
+    referrer = relationship("User", foreign_keys=[referrer_id], backref="rewards_given")
+    referee = relationship("User", foreign_keys=[referee_id], backref="rewards_received")
+    
+    def __repr__(self):
+        return f"<ReferralReward {self.id} for referrer {self.referrer_id}>"
+
+
+class WithdrawalRequest(Base):
+    """Модель заявок на вывод реферальных средств"""
+    __tablename__ = "withdrawal_requests"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    amount = Column(Integer, nullable=False)  # Сумма вывода в рублях
+    payment_method = Column(String(50), nullable=False)  # 'card' или 'sbp'
+    payment_details = Column(String(255), nullable=False)  # Номер карты или телефона
+    status = Column(String(20), default='pending')  # 'pending', 'approved', 'rejected', 'completed'
+    created_at = Column(DateTime, server_default=func.now())
+    processed_at = Column(DateTime, nullable=True)  # Когда обработана
+    processed_by_admin_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # Кто обработал
+    admin_comment = Column(Text, nullable=True)  # Комментарий админа
+    
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id], backref="withdrawal_requests")
+    processed_by = relationship("User", foreign_keys=[processed_by_admin_id])
+    
+    def __repr__(self):
+        return f"<WithdrawalRequest {self.id} user={self.user_id} amount={self.amount}>"

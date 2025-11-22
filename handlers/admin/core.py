@@ -498,6 +498,9 @@ def _admin_menu_keyboard(user=None):
             InlineKeyboardButton(text="⚙️ Админы", callback_data="admin_manage_admins"),
             InlineKeyboardButton(text="🚫 Заявки", callback_data="admin_cancellation_requests")
         ])
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="💸 Заявки на вывод", callback_data="admin_withdrawals")
+        ])
     else:
         # Для обычных админов только заявки (одна кнопка)
         keyboard_buttons.append([

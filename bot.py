@@ -26,6 +26,7 @@ from handlers.admin import (
     register_admin_birthdays_handlers,
     register_admin_admins_handlers,
     register_autorenew_handlers,
+    register_admin_withdrawals_handlers,
 )
 from handlers.user_handlers import register_user_handlers
 from handlers.message_handlers import register_message_handlers
@@ -1557,6 +1558,8 @@ async def main():
     register_admin_birthdays_handlers(dp)
     # Модуль управления админами (регистрируем ПЕРЕД core, чтобы обработчики имели приоритет)
     register_admin_admins_handlers(dp)
+    # Модуль модерации заявок на вывод реферальных средств
+    register_admin_withdrawals_handlers(dp)
     register_user_handlers(dp)
     register_message_handlers(dp)
     

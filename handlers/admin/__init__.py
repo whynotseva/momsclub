@@ -12,3 +12,4 @@ from .user_prediction import register_prediction_handlers
 from .core import register_admin_core_handlers
 from .birthdays import register_admin_birthdays_handlers
 from .admins import register_admin_admins_handlers
+from .withdrawals import register_admin_withdrawals_handlers

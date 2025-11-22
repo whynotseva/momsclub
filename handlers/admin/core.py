@@ -101,8 +101,8 @@ async def process_admin_stats(callback: CallbackQuery):
             # Платежи за сегодня
             result = await session.execute(
                 select(func.sum(PaymentLog.amount)).where(
-                    PaymentLog.payment_date >= today_start,
-                    PaymentLog.status == 'completed'
+                    PaymentLog.created_at >= today_start,
+                    PaymentLog.status == 'success'
                 )
             )
             payments_today = result.scalar() or 0
@@ -110,9 +110,9 @@ async def process_admin_stats(callback: CallbackQuery):
             # Платежи за вчера
             result = await session.execute(
                 select(func.sum(PaymentLog.amount)).where(
-                    PaymentLog.payment_date >= yesterday_start,
-                    PaymentLog.payment_date < today_start,
-                    PaymentLog.status == 'completed'
+                    PaymentLog.created_at >= yesterday_start,
+                    PaymentLog.created_at < today_start,
+                    PaymentLog.status == 'success'
                 )
             )
             payments_yesterday = result.scalar() or 0

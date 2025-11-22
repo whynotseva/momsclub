@@ -4902,7 +4902,12 @@ async def confirm_withdrawal(callback: types.CallbackQuery, state: FSMContext):
                     data.get('masked_details', payment_details)
                 )
                 
-                await callback.message.edit_text(text, parse_mode="HTML")
+                # Добавляем кнопку назад
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="« Назад в реферальную программу", callback_data="referral_program")]
+                ])
+                
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
                 
                 # Уведомляем админов
                 await notify_admins_about_withdrawal(callback.bot, user, payment_method, payment_details)
@@ -4930,7 +4935,7 @@ async def notify_admins_about_withdrawal(bot, user, payment_method, payment_deta
     """Уведомляет админов о новой заявке на вывод"""
     try:
         from utils.referral_messages import get_admin_withdrawal_notification_text
-        from utils.admin_permissions import get_all_admin_ids
+        from utils.constants import ADMIN_IDS
         
         user_name = user.first_name or "Без имени"
         if user.username:
@@ -4944,10 +4949,10 @@ async def notify_admins_about_withdrawal(bot, user, payment_method, payment_deta
             payment_method
         )
         
-        admin_ids = await get_all_admin_ids()
-        for admin_id in admin_ids:
+        for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(admin_id, text, parse_mode="HTML")
+                logger.info(f"Отправлено уведомление о выводе админу {admin_id}")
             except Exception as e:
                 logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
                 

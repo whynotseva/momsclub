@@ -544,6 +544,12 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
             user_info_lines.append("")
             user_info_lines.append(f"<b>⭐ Заметка (избранное):</b>\n{favorite.note}")
         
+        # Добавляем реферальную информацию
+        from handlers.admin.referral_info import get_referral_section_for_user
+        ref_text, ref_buttons_list = await get_referral_section_for_user(session, user.id)
+        if ref_text:
+            user_info_lines.append(ref_text)
+        
         user_info = "\n".join(user_info_lines)
 
         # Проверяем статус избранного
@@ -568,6 +574,10 @@ async def process_update_user_info(callback: CallbackQuery, telegram_id: int, re
                 callback_data=f"admin_moderation_menu:{user.telegram_id}"
             )]
         ]
+        
+        # Добавляем кнопки реферальной программы
+        if ref_buttons_list:
+            keyboard_buttons.extend(ref_buttons_list)
         
         # Кнопка избранного
         if user_is_favorite:

@@ -34,7 +34,7 @@ async def show_autorenew_menu(callback: CallbackQuery):
             result_enabled = await session.execute(query_enabled)
             enabled_count = len(result_enabled.scalars().all())
             
-            # Пользователи с выключенным автопродлением И активной подпиской
+            # Пользователи с выключенным автопродлением И активной подпиской (НЕ lifetime)
             # (в зоне риска - подписка истечёт и не продлится)
             query_disabled = (
                 select(User)
@@ -42,7 +42,8 @@ async def show_autorenew_menu(callback: CallbackQuery):
                 .where(
                     User.is_recurring_active == False,
                     Subscription.is_active == True,
-                    Subscription.end_date > datetime.now()
+                    Subscription.end_date > datetime.now(),
+                    Subscription.is_lifetime == False  # Исключаем пожизненные
                 )
                 .distinct()
             )
@@ -98,15 +99,28 @@ async def show_autorenew_enabled(callback: CallbackQuery):
             return
     
     try:
-        page = int(callback.data.split(":")[1])
+        parts = callback.data.split(":")
+        page = int(parts[1])
+        sort_order = parts[2] if len(parts) > 2 else "asc"  # asc = ближайшие первыми, desc = дальние первыми
         
         async with AsyncSessionLocal() as session:
             # Получаем всех пользователей с включенным автопродлением и их активные подписки
+            # Сортируем через JOIN для корректной сортировки по дате подписки
+            if sort_order == "asc":
+                order_clause = Subscription.end_date.asc().nulls_last()
+            else:
+                order_clause = Subscription.end_date.desc().nulls_last()
+            
             query = (
                 select(User)
-                .where(User.is_recurring_active == True)
+                .join(Subscription, User.id == Subscription.user_id)
+                .where(
+                    User.is_recurring_active == True,
+                    Subscription.is_active == True
+                )
                 .options(selectinload(User.subscriptions))
-                .order_by(User.updated_at.desc())
+                .distinct()
+                .order_by(order_clause)
             )
             result = await session.execute(query)
             all_users = result.scalars().all()
@@ -159,17 +173,31 @@ async def show_autorenew_enabled(callback: CallbackQuery):
                     callback_data=f"admin_user_id:{usr.telegram_id}"
                 )])
             
+            # Кнопки сортировки
+            sort_buttons = []
+            if sort_order == "desc":
+                sort_buttons.append(InlineKeyboardButton(
+                    text="⏰ Ближайшие сначала",
+                    callback_data=f"admin_autorenew_enabled:0:asc"
+                ))
+            else:
+                sort_buttons.append(InlineKeyboardButton(
+                    text="📅 Дальние сначала",
+                    callback_data=f"admin_autorenew_enabled:0:desc"
+                ))
+            keyboard_buttons.append(sort_buttons)
+            
             # Навигация
             nav_buttons = []
             if page > 0:
                 nav_buttons.append(InlineKeyboardButton(
                     text="◀️ Назад",
-                    callback_data=f"admin_autorenew_enabled:{page - 1}"
+                    callback_data=f"admin_autorenew_enabled:{page - 1}:{sort_order}"
                 ))
             if page < total_pages - 1:
                 nav_buttons.append(InlineKeyboardButton(
                     text="Вперёд ▶️",
-                    callback_data=f"admin_autorenew_enabled:{page + 1}"
+                    callback_data=f"admin_autorenew_enabled:{page + 1}:{sort_order}"
                 ))
             
             if nav_buttons:
@@ -200,21 +228,29 @@ async def show_autorenew_disabled(callback: CallbackQuery):
             return
     
     try:
-        page = int(callback.data.split(":")[1])
+        parts = callback.data.split(":")
+        page = int(parts[1])
+        sort_order = parts[2] if len(parts) > 2 else "asc"  # asc = ближайшие первыми (срочные), desc = дальние
         
         async with AsyncSessionLocal() as session:
-            # Получаем пользователей с выключенным автопродлением И активной подпиской
+            # Получаем пользователей с выключенным автопродлением И активной подпиской (НЕ lifetime)
+            if sort_order == "asc":
+                order_clause = Subscription.end_date.asc()
+            else:
+                order_clause = Subscription.end_date.desc()
+            
             query = (
                 select(User)
                 .join(Subscription, User.id == Subscription.user_id)
                 .where(
                     User.is_recurring_active == False,
                     Subscription.is_active == True,
-                    Subscription.end_date > datetime.now()
+                    Subscription.end_date > datetime.now(),
+                    Subscription.is_lifetime == False  # Исключаем пожизненные
                 )
                 .options(selectinload(User.subscriptions))
                 .distinct()
-                .order_by(Subscription.end_date.asc())  # Сортируем по дате истечения - кто первый потеряет доступ
+                .order_by(order_clause)
             )
             result = await session.execute(query)
             all_users = result.scalars().all()
@@ -285,17 +321,31 @@ async def show_autorenew_disabled(callback: CallbackQuery):
                     callback_data=f"admin_user_id:{usr.telegram_id}"
                 )])
             
+            # Кнопки сортировки
+            sort_buttons = []
+            if sort_order == "desc":
+                sort_buttons.append(InlineKeyboardButton(
+                    text="⚠️ Срочные сначала",
+                    callback_data=f"admin_autorenew_disabled:0:asc"
+                ))
+            else:
+                sort_buttons.append(InlineKeyboardButton(
+                    text="📅 Дальние сначала",
+                    callback_data=f"admin_autorenew_disabled:0:desc"
+                ))
+            keyboard_buttons.append(sort_buttons)
+            
             # Навигация
             nav_buttons = []
             if page > 0:
                 nav_buttons.append(InlineKeyboardButton(
                     text="◀️ Назад",
-                    callback_data=f"admin_autorenew_disabled:{page - 1}"
+                    callback_data=f"admin_autorenew_disabled:{page - 1}:{sort_order}"
                 ))
             if page < total_pages - 1:
                 nav_buttons.append(InlineKeyboardButton(
                     text="Вперёд ▶️",
-                    callback_data=f"admin_autorenew_disabled:{page + 1}"
+                    callback_data=f"admin_autorenew_disabled:{page + 1}:{sort_order}"
                 ))
             
             if nav_buttons:

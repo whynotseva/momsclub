@@ -206,12 +206,26 @@ def get_referral_program_text(
     Returns:
         Отформатированный текст
     """
+    # Мотивация и прогресс
+    motivation_text = ""
+    if balance >= 500:
+        motivation_text = f"\n🎉 <b>Поздравляем!</b> Вы можете вывести {balance:,}₽!\n"
+    elif balance > 0:
+        remaining = 500 - balance
+        progress_percent = int((balance / 500) * 100)
+        progress_bar = "█" * (progress_percent // 10) + "░" * (10 - (progress_percent // 10))
+        motivation_text = (
+            f"\n🎯 <b>До вывода осталось:</b> {remaining:,}₽\n"
+            f"📊 Прогресс: {progress_bar} {progress_percent}%\n"
+        )
+    
     return (
         f"🤝 <b>Реферальная программа</b>\n\n"
         f"💰 <b>Ваш баланс:</b> {balance:,}₽\n"
         f"📊 <b>Всего заработано:</b> {total_earned:,}₽\n"
         f"👥 <b>Приглашено друзей:</b> {total_referrals}\n"
-        f"💳 <b>Оплатили подписку:</b> {total_paid}\n\n"
+        f"💳 <b>Оплатили подписку:</b> {total_paid}\n"
+        f"{motivation_text}\n"
         f"📈 <b>Ваш уровень:</b> {level_name} ({bonus_percent}%)\n\n"
         f"💡 <b>Как это работает:</b>\n"
         f"1️⃣ Отправьте свою реферальную ссылку друзьям\n"

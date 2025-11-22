@@ -15,7 +15,7 @@ from database.crud import (
 )
 from utils.admin_permissions import is_admin, can_manage_admins
 from sqlalchemy import select, func as sql_func
-from database.models import User as UserModel, ReferralReward
+from database.models import User as UserModel, ReferralReward, WithdrawalRequest
 import logging
 
 logger = logging.getLogger(__name__)
@@ -124,30 +124,67 @@ async def show_referral_history(callback: CallbackQuery):
             # Получаем историю наград
             rewards = await get_referral_rewards(session, user.id, limit=20)
             
-            text = f"📊 <b>История реферальных наград</b>\n"
+            # Получаем историю выводов
+            withdrawals_query = select(WithdrawalRequest).where(
+                WithdrawalRequest.user_id == user.id,
+                WithdrawalRequest.status.in_(['approved', 'rejected'])
+            ).order_by(WithdrawalRequest.created_at.desc()).limit(20)
+            withdrawals_result = await session.execute(withdrawals_query)
+            withdrawals = withdrawals_result.scalars().all()
+            
+            text = f"📊 <b>История операций</b>\n"
             text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
             text += f"📱 ID: {telegram_id}\n"
             text += f"💰 Текущий баланс: {user.referral_balance or 0:,}₽\n\n"
             
-            text += "ℹ️ <i>Показаны только награды от рефералов.\nРучные начисления админом отражаются в балансе.</i>\n\n"
+            # Объединяем награды и списания в один список
+            all_operations = []
             
-            if not rewards:
-                text += "📋 Нет реферальных наград"
+            # Добавляем награды
+            for reward in rewards:
+                all_operations.append({
+                    'type': 'reward',
+                    'date': reward.created_at,
+                    'data': reward
+                })
+            
+            # Добавляем списания
+            for withdrawal in withdrawals:
+                all_operations.append({
+                    'type': 'withdrawal',
+                    'date': withdrawal.created_at,
+                    'data': withdrawal
+                })
+            
+            # Сортируем по дате (новые сверху)
+            all_operations.sort(key=lambda x: x['date'], reverse=True)
+            
+            if not all_operations:
+                text += "📋 Нет операций"
             else:
-                for reward in rewards:
-                    referee = await get_user_by_id(session, reward.referee_id)
-                    referee_name = referee.first_name if referee else "Неизвестно"
-                    if referee and referee.username:
-                        referee_name = f"@{referee.username}"
+                for op in all_operations[:20]:  # Показываем последние 20
+                    date_str = op['date'].strftime('%d.%m.%Y %H:%M')
                     
-                    date_str = reward.created_at.strftime('%d.%m.%Y %H:%M')
+                    if op['type'] == 'reward':
+                        reward = op['data']
+                        referee = await get_user_by_id(session, reward.referee_id)
+                        referee_name = referee.first_name if referee else "Неизвестно"
+                        if referee and referee.username:
+                            referee_name = f"@{referee.username}"
+                        
+                        if reward.reward_type == 'money':
+                            text += f"💰 <b>+{reward.reward_amount}₽</b> от {referee_name}\n"
+                        else:
+                            text += f"📅 <b>+{reward.reward_amount} дн.</b> от {referee_name}\n"
+                        
+                        text += f"   🎯 {reward.bonus_percent}% · {date_str}\n\n"
                     
-                    if reward.reward_type == 'money':
-                        text += f"💰 <b>{reward.reward_amount}₽</b> от {referee_name}\n"
-                    else:
-                        text += f"📅 <b>{reward.reward_amount} дн.</b> от {referee_name}\n"
-                    
-                    text += f"   🎯 {reward.bonus_percent}% · {date_str}\n\n"
+                    elif op['type'] == 'withdrawal':
+                        withdrawal = op['data']
+                        status_emoji = "✅" if withdrawal.status == 'approved' else "❌"
+                        status_text = "Одобрено" if withdrawal.status == 'approved' else "Отклонено"
+                        text += f"💸 <b>-{withdrawal.amount:,}₽</b> вывод {status_emoji}\n"
+                        text += f"   {status_text} · {date_str}\n\n"
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(

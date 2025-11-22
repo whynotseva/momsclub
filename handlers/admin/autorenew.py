@@ -9,6 +9,7 @@ from database.config import AsyncSessionLocal
 from database.models import User, Subscription
 from database.crud import get_user_by_telegram_id
 from utils.admin_permissions import is_admin
+from utils.constants import LIFETIME_THRESHOLD
 
 logger = logging.getLogger(__name__)
 autorenew_router = Router()
@@ -43,7 +44,7 @@ async def show_autorenew_menu(callback: CallbackQuery):
                     User.is_recurring_active == False,
                     Subscription.is_active == True,
                     Subscription.end_date > datetime.now(),
-                    Subscription.is_lifetime == False  # Исключаем пожизненные
+                    Subscription.end_date < LIFETIME_THRESHOLD  # Исключаем пожизненные (end_date < 2099-01-01)
                 )
                 .distinct()
             )
@@ -246,7 +247,7 @@ async def show_autorenew_disabled(callback: CallbackQuery):
                     User.is_recurring_active == False,
                     Subscription.is_active == True,
                     Subscription.end_date > datetime.now(),
-                    Subscription.is_lifetime == False  # Исключаем пожизненные
+                    Subscription.end_date < LIFETIME_THRESHOLD  # Исключаем пожизненные (end_date < 2099-01-01)
                 )
                 .options(selectinload(User.subscriptions))
                 .distinct()

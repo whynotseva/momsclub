@@ -60,7 +60,14 @@ async def show_autorenew_menu(callback: CallbackQuery):
             )]
         ])
         
-        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        # Удаляем старое сообщение (может быть с картинкой)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        
+        # Отправляем новое сообщение
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
         await callback.answer()
         
     except Exception as e:

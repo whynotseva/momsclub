@@ -6,10 +6,17 @@ import logging
 from datetime import datetime
 from utils.constants import ADMIN_IDS
 from utils.admin_permissions import is_admin
-from database.crud import get_user_by_telegram_id
+from database.crud import (
+    get_user_by_telegram_id,
+    get_sorted_active_subscriptions,
+    extend_subscription,
+    get_active_subscription,
+    is_favorite,
+    add_to_favorites,
+    remove_from_favorites
+)
 from utils.helpers import html_kv
 from database.config import AsyncSessionLocal
-from database.crud import get_sorted_active_subscriptions
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +70,17 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
     current_items = subscriptions_data[start_idx:end_idx]
 
     now = datetime.now()
+    
+    message_text = f"<b>📅 Активные подписки</b> (стр. {page+1}/{total_pages})\n"
+    message_text += f"Всего: {total_items}\n\n"
+    message_text += "<i>⚡ Быстрые действия под каждым пользователем</i>"
+    
+    inline_kb = []
+    
     if not current_items:
         message_text = "<b>📅 Активные подписки</b>\n\nАктивных подписок не найдено."
     else:
-        lines = ["<b>📅 Активные подписки</b>", ""]
+        # Формируем кнопки для каждого пользователя
         for i, (user, subscription) in enumerate(current_items, 1):
             user_name = user.first_name or ""
             if user.last_name:
@@ -76,33 +90,38 @@ async def process_subscription_dates(callback: CallbackQuery, state: FSMContext)
             if not user_name.strip():
                 user_name = f"ID: {user.telegram_id}"
             
+            # Формируем текст кнопки пользователя
             if is_lifetime_subscription(subscription):
-                lines.append(f"♾️ {start_idx + i}. <b>{user_name}</b>")
-                lines.append(html_kv("📅 Статус", "∞ Пожизненная подписка") + "\n")
+                user_button_text = f"♾️ {start_idx + i}. {user_name}"
             else:
                 days_left = (subscription.end_date - now).days
                 
                 # Визуальные индикаторы по срочности
                 if days_left <= 1:
                     status_emoji = "🔴"
-                    status_text = "КРИТИЧНО"
                 elif days_left <= 3:
                     status_emoji = "🟠"
-                    status_text = "СРОЧНО"
                 elif days_left <= 7:
                     status_emoji = "🟡"
-                    status_text = "ВНИМАНИЕ"
                 else:
                     status_emoji = "🟢"
-                    status_text = "НОРМА"
                 
-                date_formatted = subscription.end_date.strftime("%d.%m.%Y")
-                lines.append(f"{status_emoji} {start_idx + i}. <b>{user_name}</b>")
-                lines.append(html_kv("📅 Дата окончания", date_formatted))
-                lines.append(html_kv("⏱ Осталось дней", f"{days_left} ({status_text})") + "\n")
-        message_text = "\n".join(lines)
-
-    inline_kb = []
+                user_button_text = f"{status_emoji} {start_idx + i}. {user_name} - {days_left}д"
+            
+            # Кнопка с именем пользователя
+            inline_kb.append([InlineKeyboardButton(
+                text=user_button_text,
+                callback_data=f"sub_user_info:{user.telegram_id}:{page}"
+            )])
+            
+            # Быстрые действия под пользователем
+            action_buttons = [
+                InlineKeyboardButton(text="👁️ Bio", callback_data=f"sub_bio:{user.telegram_id}:{page}"),
+                InlineKeyboardButton(text="➕7д", callback_data=f"sub_add:{user.telegram_id}:7:{page}"),
+                InlineKeyboardButton(text="➕30д", callback_data=f"sub_add:{user.telegram_id}:30:{page}"),
+                InlineKeyboardButton(text="⭐", callback_data=f"sub_fav:{user.telegram_id}:{page}")
+            ]
+            inline_kb.append(action_buttons)
     pagination = []
     if page > 0:
         pagination.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin_subscription_dates:{page-1}"))
@@ -179,3 +198,107 @@ async def export_subscriptions(callback: CallbackQuery):
     df.to_excel(filename, index=False)
     doc = FSInputFile(filename)
     await callback.message.answer_document(document=doc, caption="📊 Экспорт данных о подписках")
+
+
+# Быстрые действия
+@subscriptions_router.callback_query(F.data.startswith("sub_user_info:"))
+async def show_sub_user_info(callback: CallbackQuery):
+    """Показывает краткую информацию о подписке пользователя"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            subscription = await get_active_subscription(session, user.id)
+            if not subscription:
+                await callback.answer("❌ Подписка не найдена", show_alert=True)
+                return
+            
+            if is_lifetime_subscription(subscription):
+                text = f"👤 {user.first_name or 'Пользователь'}\n\n♾️ Пожизненная подписка"
+            else:
+                days_left = (subscription.end_date - datetime.now()).days
+                date_str = subscription.end_date.strftime("%d.%m.%Y")
+                text = f"👤 {user.first_name or 'Пользователь'}\n\n📅 До: {date_str}\n⏱ Осталось: {days_left} дн."
+            
+            await callback.answer(text, show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка в show_sub_user_info: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@subscriptions_router.callback_query(F.data.startswith("sub_bio:"))
+async def open_sub_bio(callback: CallbackQuery):
+    """Открывает полный bio пользователя"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+        
+        # Импортируем функцию из users.py
+        from handlers.admin.users import process_update_user_info
+        
+        await process_update_user_info(callback, telegram_id)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в open_sub_bio: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@subscriptions_router.callback_query(F.data.startswith("sub_add:"))
+async def add_subscription_days(callback: CallbackQuery):
+    """Добавляет дни к подписке"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        days = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            # Продлеваем подписку
+            await extend_subscription(session, user.id, days, 0, "admin_quick_action")
+            await callback.answer(f"✅ Добавлено {days} дн.", show_alert=True)
+            
+            # Обновляем список
+            callback.data = f"admin_subscription_dates:{page}"
+            await process_subscription_dates(callback, None)
+    except Exception as e:
+        logger.error(f"Ошибка в add_subscription_days: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@subscriptions_router.callback_query(F.data.startswith("sub_fav:"))
+async def toggle_sub_favorite(callback: CallbackQuery):
+    """Добавляет/удаляет пользователя из избранного"""
+    try:
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+        
+        async with AsyncSessionLocal() as session:
+            is_fav = await is_favorite(session, callback.from_user.id, telegram_id)
+            
+            if is_fav:
+                await remove_from_favorites(session, callback.from_user.id, telegram_id)
+                await callback.answer("❌ Удалено из избранного", show_alert=True)
+            else:
+                await add_to_favorites(session, callback.from_user.id, telegram_id, note=None)
+                await callback.answer("⭐ Добавлено в избранное", show_alert=True)
+            
+            # Обновляем список
+            callback.data = f"admin_subscription_dates:{page}"
+            await process_subscription_dates(callback, None)
+    except Exception as e:
+        logger.error(f"Ошибка в toggle_sub_favorite: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)

@@ -11,7 +11,8 @@ from database.crud import (
     get_user_by_telegram_id,
     get_user_by_id,
     get_referral_rewards,
-    add_referral_balance
+    add_referral_balance,
+    deduct_referral_balance
 )
 from utils.admin_permissions import is_admin, can_manage_admins
 from sqlalchemy import select, func as sql_func
@@ -24,7 +25,8 @@ referral_info_router = Router()
 
 class AdminReferralStates(StatesGroup):
     """Состояния FSM для работы с реферальными начислениями"""
-    waiting_amount = State()
+    waiting_add_amount = State()
+    waiting_deduct_amount = State()
 
 
 def register_admin_referral_info_handlers(dp):
@@ -89,11 +91,11 @@ async def get_referral_section_for_user(session, user_id: int) -> tuple[str, lis
             )]
         ]
         
-        # Кнопка начисления только для супер-админов
+        # Кнопка управления балансом только для супер-админов
         buttons.append([
             InlineKeyboardButton(
-                text="💰 Начислить деньги",
-                callback_data=f"admin_ref_add_money:{user.telegram_id}"
+                text="💰 Управление балансом",
+                callback_data=f"admin_ref_balance_menu:{user.telegram_id}"
             )
         ])
         
@@ -208,7 +210,12 @@ async def show_referral_history(callback: CallbackQuery):
                         admin_name = "админом"
                         if adjustment.admin:
                             admin_name = f"@{adjustment.admin.username}" if adjustment.admin.username else adjustment.admin.first_name
-                        text += f"🎁 <b>+{adjustment.amount:,}₽</b> начислено {admin_name}\n"
+                        
+                        # Начисление или списание
+                        if adjustment.amount > 0:
+                            text += f"🎁 <b>+{adjustment.amount:,}₽</b> начислено {admin_name}\n"
+                        else:
+                            text += f"➖ <b>{adjustment.amount:,}₽</b> списано {admin_name}\n"
                         text += f"   {date_str}\n\n"
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -227,6 +234,99 @@ async def show_referral_history(callback: CallbackQuery):
             
     except Exception as e:
         logger.error(f"Ошибка в show_referral_history: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@referral_info_router.callback_query(F.data.startswith("admin_ref_balance_menu:"))
+async def show_balance_menu(callback: CallbackQuery):
+    """Показывает меню управления балансом"""
+    try:
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not can_manage_admins(admin):
+                await callback.answer("❌ Только для супер-админов", show_alert=True)
+                return
+            
+            telegram_id = int(callback.data.split(":")[1])
+            user = await get_user_by_telegram_id(session, telegram_id)
+            
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            text = f"💰 <b>Управление балансом</b>\n\n"
+            text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
+            text += f"📱 ID: {telegram_id}\n"
+            text += f"💰 Текущий баланс: <b>{user.referral_balance or 0:,}₽</b>\n\n"
+            text += "Выберите действие:"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Начислить деньги", callback_data=f"admin_ref_add_money:{telegram_id}")],
+                [InlineKeyboardButton(text="➖ Списать деньги", callback_data=f"admin_ref_deduct_menu:{telegram_id}")],
+                [InlineKeyboardButton(text="« Назад к пользователю", callback_data=f"admin_user_info:{telegram_id}")]
+            ])
+            
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в show_balance_menu: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@referral_info_router.callback_query(F.data.startswith("admin_ref_deduct_menu:"))
+async def show_deduct_menu(callback: CallbackQuery):
+    """Показывает меню списания"""
+    try:
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not can_manage_admins(admin):
+                await callback.answer("❌ Только для супер-админов", show_alert=True)
+                return
+            
+            telegram_id = int(callback.data.split(":")[1])
+            user = await get_user_by_telegram_id(session, telegram_id)
+            
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            balance = user.referral_balance or 0
+            
+            text = f"➖ <b>Списание средств</b>\n\n"
+            text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
+            text += f"📱 ID: {telegram_id}\n"
+            text += f"💰 Текущий баланс: <b>{balance:,}₽</b>\n\n"
+            text += "Выберите действие:"
+            
+            keyboard_buttons = []
+            
+            # Кнопка списания всего баланса (если баланс > 0)
+            if balance > 0:
+                keyboard_buttons.append([
+                    InlineKeyboardButton(
+                        text=f"🗑 Списать весь баланс ({balance:,}₽)",
+                        callback_data=f"admin_ref_deduct_all:{telegram_id}"
+                    )
+                ])
+            
+            # Кнопка списания определенной суммы
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text="💵 Списать определенную сумму",
+                    callback_data=f"admin_ref_deduct_custom:{telegram_id}"
+                )
+            ])
+            
+            keyboard_buttons.append([
+                InlineKeyboardButton(text="« Назад", callback_data=f"admin_ref_balance_menu:{telegram_id}")
+            ])
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+            
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в show_deduct_menu: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 
@@ -249,7 +349,7 @@ async def start_add_money(callback: CallbackQuery, state: FSMContext):
             
             await state.update_data(target_user_id=user.id, target_telegram_id=telegram_id)
             
-            text = f"💰 <b>Начисление средств</b>\n\n"
+            text = f"➕ <b>Начисление средств</b>\n\n"
             text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
             text += f"📱 ID: {telegram_id}\n"
             text += f"💰 Текущий баланс: {user.referral_balance or 0:,}₽\n\n"
@@ -258,18 +358,18 @@ async def start_add_money(callback: CallbackQuery, state: FSMContext):
             text += "Или нажмите кнопку отмены"
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="« Отмена", callback_data="admin_ref_cancel")]
+                [InlineKeyboardButton(text="« Отмена", callback_data=f"admin_ref_balance_menu:{telegram_id}")]
             ])
             
             await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-            await state.set_state(AdminReferralStates.waiting_amount)
+            await state.set_state(AdminReferralStates.waiting_add_amount)
             
     except Exception as e:
         logger.error(f"Ошибка в start_add_money: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 
-@referral_info_router.message(AdminReferralStates.waiting_amount)
+@referral_info_router.message(AdminReferralStates.waiting_add_amount)
 async def process_add_money_amount(message: Message, state: FSMContext):
     """Обрабатывает ввод суммы для начисления"""
     try:
@@ -403,6 +503,257 @@ async def confirm_add_money(callback: CallbackQuery, state: FSMContext):
         await state.clear()
 
 
+@referral_info_router.callback_query(F.data.startswith("admin_ref_deduct_all:"))
+async def confirm_deduct_all(callback: CallbackQuery):
+    """Подтверждение списания всего баланса"""
+    try:
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not can_manage_admins(admin):
+                await callback.answer("❌ Только для супер-админов", show_alert=True)
+                return
+            
+            telegram_id = int(callback.data.split(":")[1])
+            user = await get_user_by_telegram_id(session, telegram_id)
+            
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            balance = user.referral_balance or 0
+            
+            if balance <= 0:
+                await callback.answer("❌ Баланс уже пуст", show_alert=True)
+                return
+            
+            # Списываем весь баланс
+            success = await deduct_referral_balance(session, user.id, balance)
+            
+            if success:
+                # Создаём запись о списании
+                from database.models import AdminBalanceAdjustment
+                adjustment = AdminBalanceAdjustment(
+                    user_id=user.id,
+                    admin_id=admin.id,
+                    amount=-balance,  # Отрицательное значение для списания
+                    comment=f"Списание всего баланса админом {admin.username or admin.first_name}"
+                )
+                session.add(adjustment)
+                await session.commit()
+                
+                # Уведомляем пользователя
+                try:
+                    user_text = f"⚠️ <b>Списание средств</b>\n\n"
+                    user_text += f"С вашего реферального баланса списано <b>{balance:,}₽</b>.\n\n"
+                    user_text += f"💰 Текущий баланс: 0₽"
+                    
+                    await callback.bot.send_message(telegram_id, user_text, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Не удалось отправить уведомление пользователю {telegram_id}: {e}")
+                
+                text = f"✅ <b>Успешно списано!</b>\n\n"
+                text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
+                text += f"📱 ID: {telegram_id}\n"
+                text += f"💸 Списано: {balance:,}₽\n"
+                text += f"📊 Новый баланс: 0₽"
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="« Назад к пользователю",
+                        callback_data=f"admin_user_info:{telegram_id}"
+                    )]
+                ])
+                
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            else:
+                await callback.answer("❌ Ошибка при списании", show_alert=True)
+            
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_deduct_all: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@referral_info_router.callback_query(F.data.startswith("admin_ref_deduct_custom:"))
+async def start_deduct_custom(callback: CallbackQuery, state: FSMContext):
+    """Начинает процесс списания определенной суммы"""
+    try:
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not can_manage_admins(admin):
+                await callback.answer("❌ Только для супер-админов", show_alert=True)
+                return
+            
+            telegram_id = int(callback.data.split(":")[1])
+            user = await get_user_by_telegram_id(session, telegram_id)
+            
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            await state.update_data(target_user_id=user.id, target_telegram_id=telegram_id)
+            
+            text = f"➖ <b>Списание средств</b>\n\n"
+            text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
+            text += f"📱 ID: {telegram_id}\n"
+            text += f"💰 Текущий баланс: {user.referral_balance or 0:,}₽\n\n"
+            text += "Введите сумму для списания (в рублях):\n"
+            text += "Например: <code>500</code>\n\n"
+            text += "Или нажмите кнопку отмены"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Отмена", callback_data=f"admin_ref_deduct_menu:{telegram_id}")]
+            ])
+            
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            await state.set_state(AdminReferralStates.waiting_deduct_amount)
+            
+    except Exception as e:
+        logger.error(f"Ошибка в start_deduct_custom: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@referral_info_router.message(AdminReferralStates.waiting_deduct_amount)
+async def process_deduct_amount(message: Message, state: FSMContext):
+    """Обрабатывает ввод суммы для списания"""
+    try:
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, message.from_user.id)
+            if not can_manage_admins(admin):
+                await message.answer("❌ Только для супер-админов")
+                await state.clear()
+                return
+            
+            # Валидация суммы
+            try:
+                amount = int(message.text.strip())
+                if amount <= 0:
+                    raise ValueError("Сумма должна быть положительной")
+                if amount > 100000:
+                    raise ValueError("Слишком большая сумма (макс. 100,000₽)")
+            except ValueError as e:
+                await message.answer(f"❌ Некорректная сумма: {e}\n\nПопробуйте еще раз или /cancel")
+                return
+            
+            data = await state.get_data()
+            target_user_id = data['target_user_id']
+            target_telegram_id = data['target_telegram_id']
+            
+            user = await get_user_by_id(session, target_user_id)
+            if not user:
+                await message.answer("❌ Пользователь не найден")
+                await state.clear()
+                return
+            
+            balance = user.referral_balance or 0
+            
+            # Проверка достаточности средств
+            if amount > balance:
+                await message.answer(
+                    f"❌ Недостаточно средств!\n\n"
+                    f"💰 Текущий баланс: {balance:,}₽\n"
+                    f"📝 Вы пытаетесь списать: {amount:,}₽\n\n"
+                    f"Попробуйте ввести меньшую сумму или /cancel"
+                )
+                return
+            
+            # Подтверждение
+            text = f"⚠️ <b>Подтверждение списания</b>\n\n"
+            text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
+            text += f"📱 ID: {target_telegram_id}\n\n"
+            text += f"💸 Сумма списания: <b>{amount:,}₽</b>\n"
+            text += f"📊 Текущий баланс: {balance}₽\n"
+            text += f"➡️ Новый баланс: {balance - amount}₽\n\n"
+            text += "Подтвердить списание?"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"admin_ref_deduct_confirm:{amount}"),
+                    InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin_ref_deduct_menu:{target_telegram_id}")
+                ]
+            ])
+            
+            await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в process_deduct_amount: {e}", exc_info=True)
+        await message.answer("❌ Произошла ошибка")
+        await state.clear()
+
+
+@referral_info_router.callback_query(F.data.startswith("admin_ref_deduct_confirm:"))
+async def confirm_deduct(callback: CallbackQuery, state: FSMContext):
+    """Подтверждает и выполняет списание"""
+    try:
+        async with AsyncSessionLocal() as session:
+            admin = await get_user_by_telegram_id(session, callback.from_user.id)
+            if not can_manage_admins(admin):
+                await callback.answer("❌ Только для супер-админов", show_alert=True)
+                await state.clear()
+                return
+            
+            amount = int(callback.data.split(":")[1])
+            data = await state.get_data()
+            target_user_id = data['target_user_id']
+            target_telegram_id = data['target_telegram_id']
+            
+            user = await get_user_by_id(session, target_user_id)
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                await state.clear()
+                return
+            
+            # Списываем
+            success = await deduct_referral_balance(session, target_user_id, amount)
+            
+            if success:
+                # Создаём запись о списании
+                from database.models import AdminBalanceAdjustment
+                adjustment = AdminBalanceAdjustment(
+                    user_id=target_user_id,
+                    admin_id=admin.id,
+                    amount=-amount,  # Отрицательное значение
+                    comment=f"Списание админом {admin.username or admin.first_name}"
+                )
+                session.add(adjustment)
+                await session.commit()
+                
+                await session.refresh(user)
+                
+                # Уведомляем пользователя
+                try:
+                    user_text = f"⚠️ <b>Списание средств</b>\n\n"
+                    user_text += f"С вашего реферального баланса списано <b>{amount:,}₽</b>.\n\n"
+                    user_text += f"💰 Текущий баланс: {user.referral_balance:,}₽"
+                    
+                    await callback.bot.send_message(target_telegram_id, user_text, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Не удалось отправить уведомление пользователю {target_telegram_id}: {e}")
+                
+                text = f"✅ <b>Успешно списано!</b>\n\n"
+                text += f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
+                text += f"📱 ID: {target_telegram_id}\n"
+                text += f"💸 Списано: {amount:,}₽\n"
+                text += f"📊 Новый баланс: {user.referral_balance:,}₽"
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="« Назад к пользователю",
+                        callback_data=f"admin_user_info:{target_telegram_id}"
+                    )]
+                ])
+                
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            else:
+                await callback.answer("❌ Ошибка при списании", show_alert=True)
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_deduct: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+        await state.clear()
+
+
 @referral_info_router.callback_query(F.data == "admin_ref_cancel")
 async def cancel_add_money(callback: CallbackQuery, state: FSMContext):
     """Отменяет начисление"""
@@ -411,7 +762,7 @@ async def cancel_add_money(callback: CallbackQuery, state: FSMContext):
         target_telegram_id = data.get('target_telegram_id')
         
         await callback.message.edit_text(
-            "❌ Начисление отменено",
+            "❌ Операция отменена",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
                     text="« Назад к пользователю",

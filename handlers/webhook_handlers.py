@@ -817,17 +817,10 @@ async def handle_payment_canceled(payment):
                 
                 webhook_logger.info(f"Статус платежа {payment_id} обновлен на 'failed'")
                 
-                # Уведомление пользователю об отмене
-                user = await get_user_by_id(session, payment_log.user_id)
-                if user:
-                    try:
-                        await bot.send_message(
-                            user.telegram_id,
-                            "❌ К сожалению, платеж был отменен.\n\n"
-                            "Пожалуйста, попробуйте еще раз или свяжитесь с поддержкой."
-                        )
-                    except Exception as e:
-                        webhook_logger.error(f"Ошибка отправки уведомления об отмене: {e}")
+                # Уведомление пользователю об отмене УБРАНО
+                # Причина: ЮКасса шлёт множество дублирующихся вебхуков payment.canceled,
+                # что приводило к спаму одинаковых сообщений пользователю (6+ раз подряд).
+                # Если пользователь не оплатил - он и так об этом знает, спамить не нужно.
         
     except Exception as e:
         webhook_logger.error(f"Ошибка в handle_payment_canceled: {e}", exc_info=True)

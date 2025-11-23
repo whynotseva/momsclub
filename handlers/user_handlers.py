@@ -1041,13 +1041,29 @@ async def process_payment_with_balance(callback: types.CallbackQuery):
                 
                 logger.info(f"Оплата балансом успешно завершена для пользователя {user.id}")
                 
-                # Добавляем пользователя в группу
-                try:
-                    group_manager = GroupManager(callback.bot)
-                    await group_manager.add_user_to_group(user.telegram_id, user.username or user.first_name)
-                    logger.info(f"Пользователь {user.id} добавлен в группу после оплаты балансом")
-                except Exception as e:
-                    logger.error(f"Ошибка при добавлении в группу: {e}")
+                # Если у пользователя НЕ БЫЛО активной подписки - отправляем ссылку на группу
+                # (это может быть как первая покупка, так и повторная после истечения)
+                if not active_sub:
+                    try:
+                        from utils.constants import CLUB_CHANNEL_URL
+                        
+                        await callback.bot.send_message(
+                            user.telegram_id,
+                            f"🎉 <b>Добро пожаловать в Mom's Club!</b>\n\n"
+                            f"Твоя подписка активирована балансом!\n"
+                            f"Теперь присоединяйся к нашей закрытой группе:\n\n"
+                            f"👇 <b>Нажми на кнопку ниже</b>",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="🚀 Присоединиться к группе",
+                                    url=CLUB_CHANNEL_URL
+                                )]
+                            ]),
+                            parse_mode="HTML"
+                        )
+                        logger.info(f"Ссылка на группу отправлена пользователю {user.id} после первой оплаты балансом")
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке ссылки на группу: {e}")
                 
                 # Отправляем уведомление пользователю
                 new_balance = user.referral_balance or 0

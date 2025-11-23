@@ -84,7 +84,7 @@ async def test_recurring_referral_payment():
             'none': 10,
             'silver': 15,
             'gold': 20,
-            'platinum': 20
+            'platinum': 30
         }
         percent = level_percent.get(referrer.current_loyalty_level or 'none', 10)
         bonus = int(2000 * percent / 100)

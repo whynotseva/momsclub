@@ -51,7 +51,7 @@ REFERRAL_MONEY_PERCENT = {
     'none': 10,      # 10% для обычных пользователей
     'silver': 15,    # 15% для Silver
     'gold': 20,      # 20% для Gold
-    'platinum': 20   # 20% для Platinum
+    'platinum': 30   # 30% для Platinum
 }
 
 # Минимальная сумма для вывода реферальных средств

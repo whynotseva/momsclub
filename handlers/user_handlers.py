@@ -778,20 +778,55 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                 # Используем ID записи лога платежа для callback_data
                 payment_db_id = payment_log_entry.id
                 
-                # Формируем текст для кнопки и сообщения с учетом скидки
-                price_text = f"{final_price} ₽"
-                if discount_percent > 0:
-                    price_text = f"<s>{price} ₽</s> {final_price} ₽"
-                    discount_info = f"\n💰 <b>Ваша скидка лояльности: {discount_percent}%</b>\n"
-                else:
-                    discount_info = ""
+                # Проверяем возможность оплаты балансом
+                from utils.balance_payment_helpers import can_pay_with_balance, format_balance_payment_message
                 
-                # Новая клавиатура БЕЗ кнопки "Я оплатила"
-                keyboard = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [InlineKeyboardButton(text=f"💳 Перейти к оплате ({final_price} ₽)", url=payment_url)],
-                        [InlineKeyboardButton(text="« Назад", callback_data="subscribe")]
-                    ]
+                has_enough_balance = can_pay_with_balance(user.referral_balance or 0, final_price)
+                
+                # Формируем клавиатуру в зависимости от баланса
+                keyboard_buttons = []
+                
+                if has_enough_balance:
+                    # Достаточно баланса - показываем обе кнопки
+                    keyboard_buttons.append([
+                        InlineKeyboardButton(
+                            text=f"💰 Оплатить балансом ({final_price:,}₽)",
+                            callback_data=f"pay_balance:{final_price}:{days}:{sub_type}"
+                        )
+                    ])
+                    keyboard_buttons.append([
+                        InlineKeyboardButton(
+                            text=f"💳 Оплатить картой ({final_price:,}₽)",
+                            url=payment_url
+                        )
+                    ])
+                else:
+                    # Недостаточно баланса - только карта + приглашение
+                    keyboard_buttons.append([
+                        InlineKeyboardButton(
+                            text=f"💳 Оплатить картой ({final_price:,}₽)",
+                            url=payment_url
+                        )
+                    ])
+                    keyboard_buttons.append([
+                        InlineKeyboardButton(
+                            text="🎁 Пригласить подруг",
+                            callback_data="referral_program"
+                        )
+                    ])
+                
+                keyboard_buttons.append([
+                    InlineKeyboardButton(text="« Назад", callback_data="subscribe")
+                ])
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+                
+                # Формируем текст сообщения
+                payment_text, _ = format_balance_payment_message(
+                    user.referral_balance or 0,
+                    final_price,
+                    days,
+                    discount_percent
                 )
                 
                 try:
@@ -800,11 +835,7 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                     
                     # Отправляем новое сообщение с информацией о платеже
                     await callback.message.answer(
-                        f"🔐 <b>Оформление подписки на {days} дней</b>\n\n"
-                        f"Сумма к оплате: <b>{price_text}</b>{discount_info}\n"
-                        "Для оплаты нажмите на кнопку «Перейти к оплате» ниже.\n"
-                        "После успешной оплаты подписка активируется в течении 2-5 минут.\n"
-                        "Вы получите уведомление, когда платеж будет обработан.",
+                        payment_text,
                         reply_markup=keyboard,
                         parse_mode="HTML"
                     )
@@ -820,6 +851,159 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
         logger.error(f"Ошибка при создании платежа для пользователя: {e}")
         error_msg = format_user_error_message(e, "при создании платежа")
         await callback.answer(error_msg, show_alert=True)
+
+
+@user_router.callback_query(F.data.startswith("pay_balance:"))
+async def process_payment_with_balance(callback: types.CallbackQuery):
+    """Обработчик оплаты подписки реферальным балансом"""
+    try:
+        # Парсим данные из callback
+        parts = callback.data.split(":")
+        price = int(parts[1])
+        days = int(parts[2])
+        sub_type = parts[3]
+        
+        logger.info(f"Пользователь {callback.from_user.id} пытается оплатить балансом: {price}₽ на {days} дней")
+        
+        from database.crud import (
+            get_user_by_telegram_id,
+            deduct_referral_balance,
+            extend_subscription_days,
+            create_subscription,
+            create_payment_log,
+            get_active_subscription
+        )
+        from utils.group_manager import GroupManager
+        import time
+        
+        async with AsyncSessionLocal() as session:
+            # Получаем пользователя
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            # КРИТИЧНО: Проверяем баланс еще раз (защита от race condition)
+            current_balance = user.referral_balance or 0
+            if current_balance < price:
+                await callback.answer(
+                    f"❌ Недостаточно средств!\n\n"
+                    f"Баланс: {current_balance:,}₽\n"
+                    f"Нужно: {price:,}₽",
+                    show_alert=True
+                )
+                return
+            
+            try:
+                # Списываем баланс
+                success = await deduct_referral_balance(session, user.id, price)
+                
+                if not success:
+                    await callback.answer("❌ Ошибка при списании баланса", show_alert=True)
+                    return
+                
+                logger.info(f"Баланс списан для пользователя {user.id}: {price}₽")
+                
+                # Проверяем есть ли активная подписка
+                active_sub = await get_active_subscription(session, user.id)
+                
+                if active_sub:
+                    # Продлеваем существующую подписку
+                    subscription = await extend_subscription_days(
+                        session,
+                        user.id,
+                        days,
+                        reason=f"balance_payment_{price}"
+                    )
+                    if not subscription:
+                        # Откатываем списание если не удалось продлить
+                        await session.rollback()
+                        await callback.answer("❌ Ошибка при продлении подписки", show_alert=True)
+                        return
+                    
+                    logger.info(f"Подписка продлена для пользователя {user.id} на {days} дней")
+                else:
+                    # Создаем новую подписку
+                    from datetime import datetime, timedelta
+                    from utils.constants import CHAT_GROUP_ID
+                    
+                    end_date = datetime.now() + timedelta(days=days)
+                    subscription = await create_subscription(
+                        session,
+                        user_id=user.id,
+                        start_date=datetime.now(),
+                        end_date=end_date,
+                        group_id=CHAT_GROUP_ID
+                    )
+                    
+                    logger.info(f"Создана новая подписка для пользователя {user.id} до {end_date}")
+                
+                # Логируем платеж балансом
+                payment_log = await create_payment_log(
+                    session,
+                    user_id=user.id,
+                    subscription_id=subscription.id,
+                    amount=price,
+                    status="success",
+                    payment_method="referral_balance",  # Специальный тип для оплаты балансом
+                    transaction_id=f"balance_{user.id}_{int(time.time())}",
+                    details=f"Оплата балансом на {days} дней. Тип: {sub_type}",
+                    days=days
+                )
+                
+                # Коммитим транзакцию
+                await session.commit()
+                await session.refresh(user)
+                
+                logger.info(f"Оплата балансом успешно завершена для пользователя {user.id}")
+                
+                # Добавляем пользователя в группу
+                try:
+                    group_manager = GroupManager(callback.bot)
+                    await group_manager.add_user_to_group(user.telegram_id, user.username or user.first_name)
+                    logger.info(f"Пользователь {user.id} добавлен в группу после оплаты балансом")
+                except Exception as e:
+                    logger.error(f"Ошибка при добавлении в группу: {e}")
+                
+                # Отправляем уведомление пользователю
+                new_balance = user.referral_balance or 0
+                success_text = (
+                    "✅ <b>Подписка успешно оплачена!</b>\n\n"
+                    f"💰 Списано с баланса: {price:,}₽\n"
+                    f"📊 Остаток баланса: {new_balance:,}₽\n"
+                    f"📅 Подписка продлена на {days} дней\n\n"
+                    "🎉 Подписка активирована мгновенно!\n"
+                    "Приятного использования Mom's Club!"
+                )
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="start")]
+                ])
+                
+                await callback.message.edit_text(
+                    success_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+                
+                # Логируем успешную оплату в payment logger
+                payment_logger = logging.getLogger("payments")
+                payment_logger.info(
+                    f"ОПЛАТА БАЛАНСОМ: user_id={user.id}, "
+                    f"amount={price}₽, days={days}, "
+                    f"new_balance={new_balance}₽, subscription_id={subscription.id}"
+                )
+                
+            except Exception as e:
+                # Откатываем транзакцию при ошибке
+                await session.rollback()
+                logger.error(f"Ошибка при оплате балансом для пользователя {user.id}: {e}", exc_info=True)
+                await callback.answer("❌ Произошла ошибка при оплате", show_alert=True)
+                
+    except Exception as e:
+        logger.error(f"Ошибка в process_payment_with_balance: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 
 # Обработчик ввода телефона для оплаты (ОТКЛЮЧЕН по требованию заказчицы)
@@ -4743,7 +4927,7 @@ async def process_referral_reward_money(callback: types.CallbackQuery):
             bonus_percent = get_bonus_percent_for_level(loyalty_level)
             money_amount = calculate_referral_bonus(payment.amount, loyalty_level)
             
-            if not await add_referral_balance(session, referrer.id, money_amount):
+            if not await add_referral_balance(session, referrer.id, money_amount, bot=callback.bot):
                 await callback.answer("❌ Ошибка начисления", show_alert=True)
                 return
             

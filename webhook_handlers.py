@@ -228,7 +228,8 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
         
         # Обработка реферального бонуса (Реферальная система 3.0)
         # ИЗМЕНЕНО: Теперь реферер получает процент от КАЖДОЙ оплаты реферала!
-        if user.referrer_id:
+        # ВАЖНО: НЕ начисляем проценты при оплате балансом!
+        if user.referrer_id and payment_log_entry.payment_method != "referral_balance":
             referrer = await get_user_by_id(session, user.referrer_id)
             if referrer:
                 # ВАЖНО: Проверяем, есть ли у реферера активная подписка
@@ -250,6 +251,8 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
                     )
                     
                     payment_logger.info(f"Уведомление о выборе награды отправлено рефереру {referrer.id}")
+        elif payment_log_entry.payment_method == "referral_balance":
+            payment_logger.info(f"Платеж балансом - реферальные проценты не начисляются")
         
         # Уведомление админам
         await send_payment_notification_to_admins(

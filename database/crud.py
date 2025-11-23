@@ -4056,7 +4056,7 @@ async def get_admin_favorites(db: AsyncSession, admin_telegram_id: int, limit: i
 # РЕФЕРАЛЬНАЯ СИСТЕМА 2.0 - CRUD ФУНКЦИИ
 # =============================================================================
 
-async def add_referral_balance(session: AsyncSession, user_id: int, amount: int) -> bool:
+async def add_referral_balance(session: AsyncSession, user_id: int, amount: int, bot=None) -> bool:
     """
     Добавляет средства на реферальный баланс пользователя
     
@@ -4064,6 +4064,7 @@ async def add_referral_balance(session: AsyncSession, user_id: int, amount: int)
         session: Сессия БД
         user_id: ID пользователя
         amount: Сумма для начисления в рублях
+        bot: Экземпляр бота для отправки уведомлений (опционально)
         
     Returns:
         True если успешно, False при ошибке
@@ -4073,6 +4074,9 @@ async def add_referral_balance(session: AsyncSession, user_id: int, amount: int)
         if not user:
             logger.error(f"[referral] Пользователь {user_id} не найден")
             return False
+        
+        # Запоминаем старый баланс для проверки порогов
+        old_balance = user.referral_balance or 0
         
         query = (
             update(User)
@@ -4085,7 +4089,25 @@ async def add_referral_balance(session: AsyncSession, user_id: int, amount: int)
         await session.execute(query)
         await session.commit()
         
-        logger.info(f"[referral] Начислено {amount}₽ на баланс пользователя {user_id}")
+        # Получаем новый баланс
+        await session.refresh(user)
+        new_balance = user.referral_balance or 0
+        
+        logger.info(f"[referral] Начислено {amount}₽ на баланс пользователя {user_id} (было {old_balance}₽, стало {new_balance}₽)")
+        
+        # Проверяем достижение порога накопления
+        if bot:
+            from utils.balance_payment_helpers import check_balance_milestone, send_balance_milestone_notification
+            
+            milestone = check_balance_milestone(old_balance, new_balance)
+            if milestone > 0:
+                logger.info(f"[referral] Пользователь {user_id} достиг порога {milestone}₽!")
+                # Отправляем уведомление асинхронно
+                try:
+                    await send_balance_milestone_notification(bot, user.telegram_id, milestone)
+                except Exception as e:
+                    logger.error(f"[referral] Ошибка при отправке уведомления о порога: {e}")
+        
         return True
     except Exception as e:
         logger.error(f"[referral] Ошибка при начислении баланса: {e}")

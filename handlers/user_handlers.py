@@ -4688,7 +4688,10 @@ async def process_review_info(callback: types.CallbackQuery):
 async def process_referral_reward_money(callback: types.CallbackQuery):
     """Обработчик выбора денежной награды"""
     try:
-        referee_id = int(callback.data.split(":")[1])
+        # Парсим callback_data: ref_reward_money:referee_id:payment_id
+        parts = callback.data.split(":")
+        referee_id = int(parts[1])
+        payment_id = int(parts[2])  # ID конкретного платежа
         
         async with AsyncSessionLocal() as session:
             referrer = await get_user_by_telegram_id(session, callback.from_user.id)
@@ -4698,16 +4701,21 @@ async def process_referral_reward_money(callback: types.CallbackQuery):
                 await callback.answer("❌ Ошибка: пользователь не найден", show_alert=True)
                 return
             
-            # Получаем последний платеж реферала
-            last_payment = await session.execute(
-                select(PaymentLog).where(
-                    PaymentLog.user_id == referee.id,
-                    PaymentLog.status == 'success'
-                ).order_by(PaymentLog.created_at.desc()).limit(1)
-            )
-            payment = last_payment.scalar_one_or_none()
+            # НЕКРИТИЧЕСКАЯ ПРОБЛЕМА #2: Проверяем активную подписку реферера
+            from database.crud import has_active_subscription
+            if not await has_active_subscription(session, referrer.id):
+                await callback.answer("❌ У вас нет активной подписки. Награды доступны только участникам клуба.", show_alert=True)
+                return
+            
+            # КРИТИЧЕСКАЯ ПРОБЛЕМА #1: Получаем КОНКРЕТНЫЙ платеж по payment_id
+            payment = await session.get(PaymentLog, payment_id)
             if not payment:
                 await callback.answer("❌ Платеж не найден", show_alert=True)
+                return
+            
+            # Проверяем, что платеж принадлежит рефералу и успешен
+            if payment.user_id != referee.id or payment.status != 'success':
+                await callback.answer("❌ Некорректный платеж", show_alert=True)
                 return
             
             # Проверяем дубль по конкретному платежу (ИЗМЕНЕНО для Реферальной системы 3.0)
@@ -4761,7 +4769,10 @@ async def process_referral_reward_money(callback: types.CallbackQuery):
 async def process_referral_reward_days(callback: types.CallbackQuery):
     """Обработчик выбора дней подписки"""
     try:
-        referee_id = int(callback.data.split(":")[1])
+        # Парсим callback_data: ref_reward_days:referee_id:payment_id
+        parts = callback.data.split(":")
+        referee_id = int(parts[1])
+        payment_id = int(parts[2])  # ID конкретного платежа
         
         async with AsyncSessionLocal() as session:
             referrer = await get_user_by_telegram_id(session, callback.from_user.id)
@@ -4771,16 +4782,21 @@ async def process_referral_reward_days(callback: types.CallbackQuery):
                 await callback.answer("❌ Ошибка: пользователь не найден", show_alert=True)
                 return
             
-            # Получаем последний платеж реферала
-            last_payment = await session.execute(
-                select(PaymentLog).where(
-                    PaymentLog.user_id == referee.id,
-                    PaymentLog.status == 'success'
-                ).order_by(PaymentLog.created_at.desc()).limit(1)
-            )
-            payment = last_payment.scalar_one_or_none()
+            # НЕКРИТИЧЕСКАЯ ПРОБЛЕМА #2: Проверяем активную подписку реферера
+            from database.crud import has_active_subscription
+            if not await has_active_subscription(session, referrer.id):
+                await callback.answer("❌ У вас нет активной подписки. Награды доступны только участникам клуба.", show_alert=True)
+                return
+            
+            # КРИТИЧЕСКАЯ ПРОБЛЕМА #1: Получаем КОНКРЕТНЫЙ платеж по payment_id
+            payment = await session.get(PaymentLog, payment_id)
             if not payment:
                 await callback.answer("❌ Платеж не найден", show_alert=True)
+                return
+            
+            # Проверяем, что платеж принадлежит рефералу и успешен
+            if payment.user_id != referee.id or payment.status != 'success':
+                await callback.answer("❌ Некорректный платеж", show_alert=True)
                 return
             
             # Проверяем дубль по конкретному платежу (ИЗМЕНЕНО для Реферальной системы 3.0)

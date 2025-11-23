@@ -245,7 +245,8 @@ async def process_successful_payment(session, payment_log_entry, yookassa_paymen
                         bot,
                         referrer,
                         user,
-                        payment_log_entry.amount
+                        payment_log_entry.amount,
+                        payment_log_entry.id  # Передаем ID платежа для точной идентификации
                     )
                     
                     payment_logger.info(f"Уведомление о выборе награды отправлено рефереру {referrer.id}")
@@ -636,7 +637,7 @@ async def handle_payment_waiting(payment):
         webhook_logger.error(f"Ошибка в handle_payment_waiting: {e}")
 
 
-async def send_referral_reward_choice(bot, referrer, referee, payment_amount):
+async def send_referral_reward_choice(bot, referrer, referee, payment_amount, payment_id):
     """
     Отправляет уведомление рефереру с выбором награды (деньги или дни)
     
@@ -645,6 +646,7 @@ async def send_referral_reward_choice(bot, referrer, referee, payment_amount):
         referrer: Объект пользователя-реферера
         referee: Объект пользователя-реферала
         payment_amount: Сумма платежа реферала
+        payment_id: ID платежа в базе данных (для точной идентификации)
     """
     try:
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -694,7 +696,7 @@ async def send_referral_reward_choice(bot, referrer, referee, payment_amount):
             keyboard_buttons.append([
                 InlineKeyboardButton(
                     text=f"💰 Получить {money_amount:,}₽ на баланс",
-                    callback_data=f"ref_reward_money:{referee.id}"
+                    callback_data=f"ref_reward_money:{referee.id}:{payment_id}"
                 )
             ])
         
@@ -702,7 +704,7 @@ async def send_referral_reward_choice(bot, referrer, referee, payment_amount):
         keyboard_buttons.append([
             InlineKeyboardButton(
                 text=f"📅 Получить {REFERRAL_BONUS_DAYS} дней подписки",
-                callback_data=f"ref_reward_days:{referee.id}"
+                callback_data=f"ref_reward_days:{referee.id}:{payment_id}"
             )
         ])
         

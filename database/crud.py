@@ -4175,13 +4175,23 @@ async def create_referral_reward(
         
         session.add(reward)
         
-        # Увеличиваем счетчик оплативших рефералов
-        query = (
-            update(User)
-            .where(User.id == referrer_id)
-            .values(total_referrals_paid=User.total_referrals_paid + 1)
+        # НЕКРИТИЧЕСКАЯ ПРОБЛЕМА #1: Увеличиваем счетчик только при ПЕРВОЙ награде от этого реферала
+        # Проверяем, есть ли уже награды от этого реферала
+        check_query = select(func.count(ReferralReward.id)).where(
+            ReferralReward.referrer_id == referrer_id,
+            ReferralReward.referee_id == referee_id
         )
-        await session.execute(query)
+        existing_count = await session.scalar(check_query) or 0
+        
+        if existing_count == 0:
+            # Это первая награда от этого реферала - увеличиваем счетчик
+            query = (
+                update(User)
+                .where(User.id == referrer_id)
+                .values(total_referrals_paid=User.total_referrals_paid + 1)
+            )
+            await session.execute(query)
+            logger.info(f"[referral] Увеличен счетчик total_referrals_paid для реферера {referrer_id}")
         
         await session.commit()
         

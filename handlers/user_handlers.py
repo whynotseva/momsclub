@@ -294,40 +294,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
             reply_markup=main_keyboard,
             parse_mode="MarkdownV2"
         )
-    
-    # Устанавливаем команды в зависимости от того, является ли пользователь админом
-    async with AsyncSessionLocal() as session:
-        user = await get_user_by_telegram_id(session, message.from_user.id)
-        
-        if user:
-            from utils.admin_permissions import is_admin
-            from aiogram.types import BotCommand, BotCommandScopeChat
-            
-            if is_admin(user):
-                # Для админов добавляем команду /admin
-                commands = [
-                    BotCommand(command="start", description="🔄 Перезапустить бота"),
-                    BotCommand(command="profile", description="🎀 Личный кабинет"),
-                    BotCommand(command="referral", description="🤝 Реферальная программа"),
-                    BotCommand(command="admin", description="👑 Админка"),
-                    BotCommand(command="faq", description="❓ Частые вопросы"),
-                    BotCommand(command="support", description="🤎 Служба поддержки")
-                ]
-            else:
-                # Для обычных пользователей обычные команды
-                commands = [
-                    BotCommand(command="start", description="🔄 Перезапустить бота"),
-                    BotCommand(command="profile", description="🎀 Личный кабинет"),
-                    BotCommand(command="referral", description="🤝 Реферальная программа"),
-                    BotCommand(command="faq", description="❓ Частые вопросы"),
-                    BotCommand(command="support", description="🤎 Служба поддержки")
-                ]
-            
-            # Устанавливаем команды для конкретного пользователя
-            await message.bot.set_my_commands(
-                commands, 
-                scope=BotCommandScopeChat(chat_id=message.from_user.id)
-            )
 
 
 # Обработчик для миграционной подписки

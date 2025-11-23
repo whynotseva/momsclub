@@ -791,7 +791,7 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                     keyboard_buttons.append([
                         InlineKeyboardButton(
                             text=f"💰 Оплатить балансом ({final_price:,}₽)",
-                            callback_data=f"pay_balance:{final_price}:{days}:{sub_type}"
+                            callback_data=f"confirm_balance_payment:{final_price}:{days}:{sub_type}"
                         )
                     ])
                     keyboard_buttons.append([
@@ -851,6 +851,76 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
         logger.error(f"Ошибка при создании платежа для пользователя: {e}")
         error_msg = format_user_error_message(e, "при создании платежа")
         await callback.answer(error_msg, show_alert=True)
+
+
+@user_router.callback_query(F.data.startswith("confirm_balance_payment:"))
+async def confirm_payment_with_balance(callback: types.CallbackQuery):
+    """Обработчик подтверждения оплаты подписки реферальным балансом"""
+    try:
+        # Парсим данные из callback
+        parts = callback.data.split(":")
+        price = int(parts[1])
+        days = int(parts[2])
+        sub_type = parts[3]
+        mode = parts[4] if len(parts) >= 5 else "standard"
+        renewal_price = int(parts[5]) if len(parts) >= 6 else None
+        renewal_days = int(parts[6]) if len(parts) >= 7 else None
+        
+        logger.info(f"Пользователь {callback.from_user.id} запросил подтверждение оплаты балансом: {price}₽ на {days} дней")
+        
+        from database.crud import get_user_by_telegram_id
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_user_by_telegram_id(session, callback.from_user.id)
+            
+            if not user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            current_balance = user.referral_balance or 0
+            remaining_balance = current_balance - price
+            
+            # Формируем текст подтверждения
+            confirmation_text = (
+                f"💰 <b>Подтверждение оплаты балансом</b>\n\n"
+                f"<b>Детали покупки:</b>\n"
+                f"📦 Подписка: {days} дней\n"
+                f"💵 Стоимость: {price:,}₽\n\n"
+                f"<b>Информация о балансе:</b>\n"
+                f"💎 Текущий баланс: {current_balance:,}₽\n"
+                f"➖ Будет списано: {price:,}₽\n"
+                f"📊 Останется: {remaining_balance:,}₽\n\n"
+                f"⚡ <i>Оплата произойдёт мгновенно!</i>\n"
+                f"🎉 <i>Подписка активируется автоматически</i>\n\n"
+                f"<b>Подтвердить оплату?</b>"
+            )
+            
+            # Формируем callback для финальной оплаты
+            if mode == "extend" and renewal_price and renewal_days:
+                pay_callback = f"pay_balance:{price}:{days}:{sub_type}:extend:{renewal_price}:{renewal_days}"
+            else:
+                pay_callback = f"pay_balance:{price}:{days}:{sub_type}"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"✅ Да, оплатить {price:,}₽",
+                    callback_data=pay_callback
+                )],
+                [InlineKeyboardButton(
+                    text="❌ Отменить",
+                    callback_data="subscribe"
+                )]
+            ])
+            
+            await callback.message.edit_text(
+                confirmation_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_payment_with_balance: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 
 @user_router.callback_query(F.data.startswith("pay_balance:"))
@@ -973,22 +1043,30 @@ async def process_payment_with_balance(callback: types.CallbackQuery):
                 
                 # Отправляем уведомление пользователю
                 new_balance = user.referral_balance or 0
-                additional_note = ""
-                if mode == "extend" and renewal_price and renewal_days:
-                    additional_note = (
-                        "\n🛠 Параметры автопродления обновлены"
-                    )
-
+                from datetime import datetime
+                
+                # Формируем детальное сообщение
                 success_text = (
-                    "✅ <b>Подписка успешно оплачена!</b>\n\n"
-                    f"💰 Списано с баланса: {price:,}₽\n"
-                    f"📊 Остаток баланса: {new_balance:,}₽\n"
-                    f"📅 Подписка продлена на {days} дней\n"
-                    f"🎉 Подписка активирована мгновенно!{additional_note}\n\n"
-                    "Спасибо, что остаешься с Mom's Club!"
+                    "✅ <b>Оплата балансом успешна!</b>\n\n"
+                    f"<b>📦 Детали покупки:</b>\n"
+                    f"• Подписка: {days} дней\n"
+                    f"• Стоимость: {price:,}₽\n\n"
+                    f"<b>💰 Баланс:</b>\n"
+                    f"• Было: {price + new_balance:,}₽\n"
+                    f"• Списано: {price:,}₽\n"
+                    f"• Осталось: {new_balance:,}₽\n\n"
+                    f"<b>🎉 Статус:</b>\n"
+                    f"• Подписка активирована мгновенно!\n"
+                    f"• Доступ к закрытому контенту открыт\n"
                 )
                 
+                if mode == "extend" and renewal_price and renewal_days:
+                    success_text += f"• Параметры автопродления обновлены\n"
+                
+                success_text += "\n💝 <i>Спасибо, что остаешься с Mom's Club!</i>"
+                
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📊 Мой баланс", callback_data="referral_program")],
                     [InlineKeyboardButton(text="🏠 Главное меню", callback_data="start")]
                 ])
                 
@@ -1005,6 +1083,38 @@ async def process_payment_with_balance(callback: types.CallbackQuery):
                     f"amount={price}₽, days={days}, "
                     f"new_balance={new_balance}₽, subscription_id={subscription.id}"
                 )
+                
+                # Отправляем уведомление админам
+                try:
+                    from utils.constants import ADMIN_IDS
+                    
+                    admin_text = (
+                        f"💰 <b>НОВАЯ ОПЛАТА БАЛАНСОМ!</b>\n\n"
+                        f"<b>Пользователь:</b>\n"
+                        f"• ID: {user.id}\n"
+                        f"• Telegram: @{user.username or 'нет username'}\n"
+                        f"• Имя: {user.first_name or 'Не указано'}\n\n"
+                        f"<b>Детали оплаты:</b>\n"
+                        f"• Сумма: {price:,}₽\n"
+                        f"• Подписка: {days} дней\n"
+                        f"• Остаток баланса: {new_balance:,}₽\n\n"
+                        f"<b>Способ оплаты:</b> Реферальный баланс\n"
+                        f"<b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+                        f"<b>ID подписки:</b> {subscription.id}"
+                    )
+                    
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await callback.bot.send_message(
+                                admin_id,
+                                admin_text,
+                                parse_mode="HTML"
+                            )
+                        except Exception as e:
+                            logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+                            
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке уведомлений админам: {e}")
                 
             except Exception as e:
                 # Откатываем транзакцию при ошибке
@@ -4286,7 +4396,7 @@ async def process_subscription_extend_payment(callback: types.CallbackQuery, sta
                         InlineKeyboardButton(
                             text=f"💰 Оплатить балансом ({final_price:,}₽)",
                             callback_data=(
-                                f"pay_balance:{final_price}:{days}:{sub_type}:extend:"
+                                f"confirm_balance_payment:{final_price}:{days}:{sub_type}:extend:"
                                 f"{renewal_price}:{renewal_duration_days}"
                             )
                         )

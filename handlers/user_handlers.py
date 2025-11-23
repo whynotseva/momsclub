@@ -788,10 +788,12 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
                 
                 if has_enough_balance:
                     # Достаточно баланса - показываем обе кнопки
+                    # Сокращаем sub_type для уменьшения длины callback_data
+                    sub_short = sub_type.replace("momclub_subscription_", "").replace("month", "m")
                     keyboard_buttons.append([
                         InlineKeyboardButton(
                             text=f"💰 Оплатить балансом ({final_price:,}₽)",
-                            callback_data=f"confirm_balance_payment:{final_price}:{days}:{sub_type}"
+                            callback_data=f"cbp:{final_price}:{days}:{sub_short}"
                         )
                     ])
                     keyboard_buttons.append([
@@ -853,18 +855,21 @@ async def create_payment_for_user(callback: types.CallbackQuery, state: FSMConte
         await callback.answer(error_msg, show_alert=True)
 
 
-@user_router.callback_query(F.data.startswith("confirm_balance_payment:"))
+@user_router.callback_query(F.data.startswith("cbp:"))
 async def confirm_payment_with_balance(callback: types.CallbackQuery):
     """Обработчик подтверждения оплаты подписки реферальным балансом"""
     try:
-        # Парсим данные из callback
+        # Парсим данные из callback (формат: cbp:price:days:sub_short[:e:renewal_price:renewal_days])
         parts = callback.data.split(":")
         price = int(parts[1])
         days = int(parts[2])
-        sub_type = parts[3]
-        mode = parts[4] if len(parts) >= 5 else "standard"
+        sub_short = parts[3]
+        mode = parts[4] if len(parts) >= 5 and parts[4] == "e" else "standard"
         renewal_price = int(parts[5]) if len(parts) >= 6 else None
         renewal_days = int(parts[6]) if len(parts) >= 7 else None
+        
+        # Восстанавливаем полный sub_type из короткого
+        sub_type = f"momclub_subscription_{sub_short.replace('m', 'month')}"
         
         logger.info(f"Пользователь {callback.from_user.id} запросил подтверждение оплаты балансом: {price}₽ на {days} дней")
         
@@ -895,11 +900,11 @@ async def confirm_payment_with_balance(callback: types.CallbackQuery):
                 f"<b>Подтвердить оплату?</b>"
             )
             
-            # Формируем callback для финальной оплаты
-            if mode == "extend" and renewal_price and renewal_days:
-                pay_callback = f"pay_balance:{price}:{days}:{sub_type}:extend:{renewal_price}:{renewal_days}"
+            # Формируем callback для финальной оплаты (сокращенный формат)
+            if mode == "e" and renewal_price and renewal_days:
+                pay_callback = f"pb:{price}:{days}:{sub_short}:e:{renewal_price}:{renewal_days}"
             else:
-                pay_callback = f"pay_balance:{price}:{days}:{sub_type}"
+                pay_callback = f"pb:{price}:{days}:{sub_short}"
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
@@ -923,18 +928,21 @@ async def confirm_payment_with_balance(callback: types.CallbackQuery):
         await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 
-@user_router.callback_query(F.data.startswith("pay_balance:"))
+@user_router.callback_query(F.data.startswith("pb:"))
 async def process_payment_with_balance(callback: types.CallbackQuery):
     """Обработчик оплаты подписки реферальным балансом"""
     try:
-        # Парсим данные из callback
+        # Парсим данные из callback (формат: pb:price:days:sub_short[:e:renewal_price:renewal_days])
         parts = callback.data.split(":")
         price = int(parts[1])
         days = int(parts[2])
-        sub_type = parts[3]
-        mode = parts[4] if len(parts) >= 5 else "standard"
+        sub_short = parts[3]
+        mode = parts[4] if len(parts) >= 5 and parts[4] == "e" else "standard"
         renewal_price = int(parts[5]) if len(parts) >= 6 else None
         renewal_days = int(parts[6]) if len(parts) >= 7 else None
+        
+        # Восстанавливаем полный sub_type из короткого
+        sub_type = f"momclub_subscription_{sub_short.replace('m', 'month')}"
         
         logger.info(f"Пользователь {callback.from_user.id} пытается оплатить балансом: {price}₽ на {days} дней")
         
@@ -1060,7 +1068,7 @@ async def process_payment_with_balance(callback: types.CallbackQuery):
                     f"• Доступ к закрытому контенту открыт\n"
                 )
                 
-                if mode == "extend" and renewal_price and renewal_days:
+                if mode == "e" and renewal_price and renewal_days:
                     success_text += f"• Параметры автопродления обновлены\n"
                 
                 success_text += "\n💝 <i>Спасибо, что остаешься с Mom's Club!</i>"
@@ -4392,13 +4400,12 @@ async def process_subscription_extend_payment(callback: types.CallbackQuery, sta
                 keyboard_buttons = []
 
                 if has_enough_balance:
+                    # Сокращаем для уменьшения длины callback_data
+                    sub_short = sub_type.replace("momclub_subscription_", "").replace("month", "m")
                     keyboard_buttons.append([
                         InlineKeyboardButton(
                             text=f"💰 Оплатить балансом ({final_price:,}₽)",
-                            callback_data=(
-                                f"confirm_balance_payment:{final_price}:{days}:{sub_type}:extend:"
-                                f"{renewal_price}:{renewal_duration_days}"
-                            )
+                            callback_data=f"cbp:{final_price}:{days}:{sub_short}:e:{renewal_price}:{renewal_duration_days}"
                         )
                     ])
 

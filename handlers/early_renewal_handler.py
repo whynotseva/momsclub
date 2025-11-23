@@ -68,15 +68,15 @@ async def process_early_renewal(callback: types.CallbackQuery):
                 inline_keyboard=[
                     [InlineKeyboardButton(
                         text=f"📦 1 месяц — {SUBSCRIPTION_PRICE}₽",
-                        callback_data="payment_1month"
+                        callback_data="payment_extend_1month"
                     )],
                     [InlineKeyboardButton(
                         text=f"📦 2 месяца — {SUBSCRIPTION_PRICE_2MONTHS}₽ 💰",
-                        callback_data="payment_2months"
+                        callback_data="payment_extend_2months"
                     )],
                     [InlineKeyboardButton(
                         text=f"📦 3 месяца — {SUBSCRIPTION_PRICE_3MONTHS}₽ 💰",
-                        callback_data="payment_3months"
+                        callback_data="payment_extend_3months"
                     )],
                     [InlineKeyboardButton(
                         text="« Назад к управлению",

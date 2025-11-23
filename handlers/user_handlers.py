@@ -862,6 +862,9 @@ async def process_payment_with_balance(callback: types.CallbackQuery):
         price = int(parts[1])
         days = int(parts[2])
         sub_type = parts[3]
+        mode = parts[4] if len(parts) >= 5 else "standard"
+        renewal_price = int(parts[5]) if len(parts) >= 6 else None
+        renewal_days = int(parts[6]) if len(parts) >= 7 else None
         
         logger.info(f"Пользователь {callback.from_user.id} пытается оплатить балансом: {price}₽ на {days} дней")
         
@@ -910,18 +913,20 @@ async def process_payment_with_balance(callback: types.CallbackQuery):
                 
                 if active_sub:
                     # Продлеваем существующую подписку
-                    subscription = await extend_subscription_days(
+                    success = await extend_subscription_days(
                         session,
                         user.id,
                         days,
                         reason=f"balance_payment_{price}"
                     )
-                    if not subscription:
+                    if not success:
                         # Откатываем списание если не удалось продлить
                         await session.rollback()
                         await callback.answer("❌ Ошибка при продлении подписки", show_alert=True)
                         return
                     
+                    # Получаем обновлённую подписку
+                    subscription = active_sub
                     logger.info(f"Подписка продлена для пользователя {user.id} на {days} дней")
                 else:
                     # Создаем новую подписку
@@ -968,13 +973,19 @@ async def process_payment_with_balance(callback: types.CallbackQuery):
                 
                 # Отправляем уведомление пользователю
                 new_balance = user.referral_balance or 0
+                additional_note = ""
+                if mode == "extend" and renewal_price and renewal_days:
+                    additional_note = (
+                        "\n🛠 Параметры автопродления обновлены"
+                    )
+
                 success_text = (
                     "✅ <b>Подписка успешно оплачена!</b>\n\n"
                     f"💰 Списано с баланса: {price:,}₽\n"
                     f"📊 Остаток баланса: {new_balance:,}₽\n"
-                    f"📅 Подписка продлена на {days} дней\n\n"
-                    "🎉 Подписка активирована мгновенно!\n"
-                    "Приятного использования Mom's Club!"
+                    f"📅 Подписка продлена на {days} дней\n"
+                    f"🎉 Подписка активирована мгновенно!{additional_note}\n\n"
+                    "Спасибо, что остаешься с Mom's Club!"
                 )
                 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -4254,13 +4265,47 @@ async def process_subscription_extend_payment(callback: types.CallbackQuery, sta
                 if discount_percent > 0:
                     price_text += f" <s>{price} ₽</s> <b>(−{discount_percent}%)</b>"
                 
-                # Создаем кнопку оплаты
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="💸 Оплатить подписку", url=payment_url)],
-                    [InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")]
+                from utils.balance_payment_helpers import (
+                    can_pay_with_balance,
+                    format_balance_payment_message
+                )
+
+                user_balance = user.referral_balance or 0
+                has_enough_balance = can_pay_with_balance(user_balance, final_price)
+                payment_text, _ = format_balance_payment_message(
+                    user_balance,
+                    final_price,
+                    days,
+                    discount_percent
+                )
+
+                keyboard_buttons = []
+
+                if has_enough_balance:
+                    keyboard_buttons.append([
+                        InlineKeyboardButton(
+                            text=f"💰 Оплатить балансом ({final_price:,}₽)",
+                            callback_data=(
+                                f"pay_balance:{final_price}:{days}:{sub_type}:extend:"
+                                f"{renewal_price}:{renewal_duration_days}"
+                            )
+                        )
+                    ])
+
+                keyboard_buttons.append([
+                    InlineKeyboardButton(
+                        text=f"💳 Оплатить картой ({final_price:,}₽)",
+                        url=payment_url
+                    )
                 ])
-                
-                # Отправляем сообщение с информацией о продлении и кнопкой оплаты
+
+                keyboard_buttons.append([
+                    InlineKeyboardButton(text="« Назад", callback_data="back_to_profile")
+                ])
+
+                keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
+                # Отправляем сообщение с информацией о продлении и кнопками оплаты
                 renewal_text = f"""<b>🎉 Продление подписки на Mom's Club</b>
 
 <b>Выбранный тариф:</b> {days} дней за {price_text}
@@ -4270,14 +4315,16 @@ async def process_subscription_extend_payment(callback: types.CallbackQuery, sta
 • Параметры автопродления будут обновлены
 {f"• Применена скидка лояльности: {discount_percent}%" if discount_percent > 0 else ""}
 
-<i>Для продолжения нажмите кнопку "Оплатить подписку" ниже</i>"""
+<i>Для продолжения выбери способ оплаты ниже</i>"""
+
+                full_text = f"{renewal_text}\n\n{payment_text}"
                 
                 try:
                     # Удаляем текущее сообщение
                     await callback.message.delete()
                     # Отправляем новое сообщение с информацией о платеже
                     await callback.message.answer(
-                        renewal_text,
+                        full_text,
                         reply_markup=keyboard,
                         parse_mode="HTML"
                     )

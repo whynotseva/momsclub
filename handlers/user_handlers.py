@@ -4729,6 +4729,27 @@ async def process_loyalty_benefit_choice(callback: types.CallbackQuery):
                 await callback.answer("Неверный код бонуса", show_alert=True)
                 return
             
+            # ИСПРАВЛЕНИЕ БАГА: Проверяем, что уровень в callback соответствует АКТУАЛЬНОМУ рассчитанному уровню
+            # Это предотвращает применение бонуса с устаревшим уровнем из старого сообщения
+            from loyalty.levels import calc_tenure_days, level_for_days
+            tenure_days = await calc_tenure_days(session, user)
+            actual_level = level_for_days(tenure_days)
+            
+            if level != actual_level:
+                logger.warning(
+                    f"⚠️ Несоответствие уровней для user_id={user.id}: "
+                    f"callback={level}, actual={actual_level}, db={user.current_loyalty_level}, tenure={tenure_days}"
+                )
+                await callback.answer(
+                    f"Твой текущий уровень: {actual_level}. Бонус для {level} недоступен.", 
+                    show_alert=True
+                )
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except:
+                    pass
+                return
+            
             # Применяем бонус
             success = await apply_benefit_from_callback(session, user, level, code)
             

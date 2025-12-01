@@ -94,29 +94,41 @@ async def process_single_user_loyalty(session: AsyncSession, user: User) -> dict
             user.current_loyalty_level and 
             user.current_loyalty_level != 'none'):
             
-            # Проверяем, не выбирал ли уже бонус
-            benefit_check_query = select(LoyaltyEvent.id).where(
-                LoyaltyEvent.user_id == user.id,
-                LoyaltyEvent.kind == 'benefit_chosen',
-                LoyaltyEvent.level == user.current_loyalty_level
-            )
-            benefit_check_result = await session.execute(benefit_check_query)
+            # ИСПРАВЛЕНИЕ БАГА: Проверяем АКТУАЛЬНЫЙ рассчитанный уровень
+            from loyalty.levels import level_for_days
+            actual_level = level_for_days(tenure_days)
             
-            if not benefit_check_result.scalar_one_or_none():
-                # Бонус не выбран
-                if active_sub:
-                    from bot import bot
-                    
-                    success = await send_choose_benefit_push(
-                        bot,
-                        session,
-                        user,
-                        user.current_loyalty_level
-                    )
-                    
-                    if success:
-                        result['pending_notified'] = True
-                        logger.info(f"✅ Pending push отправлен: user_id={user.id}")
+            if user.current_loyalty_level != actual_level:
+                logger.warning(
+                    f"⚠️ Несоответствие уровней user_id={user.id}: "
+                    f"db={user.current_loyalty_level}, actual={actual_level}, tenure={tenure_days}"
+                )
+                # Не отправляем push если уровни не совпадают
+                result['error'] = f"level_mismatch: db={user.current_loyalty_level}, actual={actual_level}"
+            else:
+                # Проверяем, не выбирал ли уже бонус
+                benefit_check_query = select(LoyaltyEvent.id).where(
+                    LoyaltyEvent.user_id == user.id,
+                    LoyaltyEvent.kind == 'benefit_chosen',
+                    LoyaltyEvent.level == user.current_loyalty_level
+                )
+                benefit_check_result = await session.execute(benefit_check_query)
+                
+                if not benefit_check_result.scalar_one_or_none():
+                    # Бонус не выбран
+                    if active_sub:
+                        from bot import bot
+                        
+                        success = await send_choose_benefit_push(
+                            bot,
+                            session,
+                            user,
+                            user.current_loyalty_level
+                        )
+                        
+                        if success:
+                            result['pending_notified'] = True
+                            logger.info(f"✅ Pending push отправлен: user_id={user.id}")
         
         return result
         

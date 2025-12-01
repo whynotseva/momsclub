@@ -269,6 +269,29 @@ async def send_loyalty_reminders(bot, db: AsyncSession) -> dict:
             try:
                 stats['with_pending'] += 1
                 
+                # ИСПРАВЛЕНИЕ БАГА: Проверяем АКТУАЛЬНЫЙ рассчитанный уровень
+                # Если уровень в базе не соответствует рассчитанному - пропускаем
+                from loyalty.levels import calc_tenure_days, level_for_days
+                tenure_days = await calc_tenure_days(db, user)
+                actual_level = level_for_days(tenure_days)
+                
+                if user.current_loyalty_level != actual_level:
+                    logger.warning(
+                        f"⚠️ Несоответствие уровней user_id={user.id}: "
+                        f"db={user.current_loyalty_level}, actual={actual_level}, tenure={tenure_days}"
+                    )
+                    # Обновляем уровень в базе и сбрасываем pending если уровень стал none
+                    if actual_level == 'none':
+                        from sqlalchemy import update as sql_update
+                        await db.execute(
+                            sql_update(User)
+                            .where(User.id == user.id)
+                            .values(current_loyalty_level=actual_level, pending_loyalty_reward=False)
+                        )
+                        await db.commit()
+                        logger.info(f"📉 Сброшен уровень и pending для user_id={user.id}")
+                    continue
+                
                 # Проверяем, не выбирал ли уже пользователь бонус для ТЕКУЩЕГО уровня
                 benefit_check_query = select(LoyaltyEvent.id).where(
                     LoyaltyEvent.user_id == user.id,

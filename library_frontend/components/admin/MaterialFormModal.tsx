@@ -56,7 +56,7 @@ function CoverUpload({ formData, formErrors, isDragging, uploadingCover, onUpdat
     <div>
       <label className="block text-sm font-medium text-[#5D4E3A] mb-1.5">Обложка *</label>
       
-      {formData.cover_image && (
+      {formData.cover_image ? (
         <div className="relative mb-3 rounded-xl overflow-hidden bg-[#F5E6D3]">
           <img src={formData.cover_image} alt="Превью обложки" className="w-full h-48 object-cover"/>
           <button
@@ -67,8 +67,7 @@ function CoverUpload({ formData, formErrors, isDragging, uploadingCover, onUpdat
             ✕
           </button>
         </div>
-      )}
-
+      ) : (
       <div 
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -110,6 +109,7 @@ function CoverUpload({ formData, formErrors, isDragging, uploadingCover, onUpdat
           )}
         </label>
       </div>
+      )}
       
       {formErrors.cover_image && <p className="text-red-500 text-xs mt-2">{formErrors.cover_image}</p>}
 

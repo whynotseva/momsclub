@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import { usePresence } from '@/hooks/usePresence'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
-import { QuoteOfDay, MobileNav, PushPromoModal } from '@/components/library'
+import { QuoteOfDay, MobileNav, PushPromoModal, CategoryFilter } from '@/components/library'
 
 // Список админов
 const ADMIN_IDS = [534740911, 44054166]
@@ -762,60 +762,13 @@ export default function LibraryPage() {
           </div>
         )}
 
-        {/* Фильтры категорий — ровная сетка 4 колонки */}
-        <div className="mb-10">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {/* Кнопка "Все" */}
-            <button
-              onClick={() => setActiveCategory('all')}
-              className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium text-sm transition-all duration-300 ${
-                activeCategory === 'all'
-                  ? 'bg-gradient-to-r from-[#B08968] to-[#A67C52] text-white shadow-lg shadow-[#B08968]/25 scale-[1.02]'
-                  : 'bg-white/90 text-[#5C5650] hover:bg-[#F5E6D3] border border-[#E8D4BA]/40 hover:border-[#B08968]/50 hover:shadow-md'
-              }`}
-            >
-              <span className="text-lg">📚</span>
-              <span>Все</span>
-            </button>
-            
-            {/* Категории из API */}
-            {apiCategories.map((cat, index) => {
-              // Последняя категория (Бренды и сотр.) на всю ширину на мобилке
-              const isLast = index === apiCategories.length - 1
-              
-              return (
-                <button
-                  key={cat.id}
-                  onClick={() => setActiveCategory(cat.slug)}
-                  className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium text-sm transition-all duration-300 ${
-                    isLast ? 'col-span-2 md:col-span-4' : ''
-                  } ${
-                    activeCategory === cat.slug
-                      ? 'bg-gradient-to-r from-[#B08968] to-[#A67C52] text-white shadow-lg shadow-[#B08968]/25 scale-[1.02]'
-                      : 'bg-white/90 text-[#5C5650] hover:bg-[#F5E6D3] border border-[#E8D4BA]/40 hover:border-[#B08968]/50 hover:shadow-md'
-                  }`}
-                >
-                  <span className="text-lg">{cat.icon}</span>
-                  <span className="truncate">{cat.name}</span>
-                </button>
-              )
-            })}
-            
-            {/* Фильтр "Выбор Полины" — на всю ширину */}
-            <button
-              onClick={() => setActiveCategory('featured')}
-              className={`col-span-2 md:col-span-4 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium text-sm transition-all duration-300 ${
-                activeCategory === 'featured'
-                  ? 'bg-gradient-to-r from-amber-400 to-amber-500 text-white shadow-lg shadow-amber-400/25 scale-[1.01]'
-                  : 'bg-gradient-to-r from-amber-50 to-orange-50 text-amber-700 border border-amber-200/60 hover:border-amber-400/50 hover:shadow-md'
-              }`}
-            >
-              <span className="text-lg">⭐</span>
-              <span>Выбор Полины</span>
-              <span className="text-xs opacity-70">({materials.filter(m => m.is_featured).length})</span>
-            </button>
-          </div>
-        </div>
+        {/* Фильтры категорий */}
+        <CategoryFilter 
+          categories={apiCategories}
+          activeCategory={activeCategory}
+          featuredCount={materials.filter(m => m.is_featured).length}
+          onChange={setActiveCategory}
+        />
 
         {/* 🔍 Поиск + Прогресс */}
         <div className="mb-6 grid lg:grid-cols-4 gap-4">

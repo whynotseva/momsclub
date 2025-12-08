@@ -6,35 +6,7 @@ import { api } from '@/lib/api'
 import { usePresence } from '@/hooks/usePresence'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { QuoteOfDay, MobileNav, PushPromoModal, CategoryFilter, SubscriptionCard, MaterialCard, Header, FeaturedSection, WelcomeCard, SearchBar } from '@/components/library'
-
-// Список админов
-const ADMIN_IDS = [534740911, 44054166]
-
-// Дефолтные данные пользователя (будут заменены реальными)
-const defaultUser = {
-  name: 'Гость',
-  avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Guest&backgroundColor=ffdfbf',
-  subscriptionDaysLeft: 0,
-  subscriptionTotal: 30,
-  loyaltyLevel: 'none' as const,
-  daysInClub: 0,
-  materialsViewed: 0,
-  uniqueViewed: 0,
-  favorites: 0,
-  totalMaterials: 0,
-  notifications: 0,
-}
-
-const loyaltyBadges = {
-  none: { label: 'Новичок', color: 'bg-gray-100 text-gray-600', icon: '🌱', bonus: '10% реферальный бонус', daysInClub: 0, nextLevel: 'Silver', daysToNext: 90 },
-  silver: { label: 'Silver', color: 'bg-gradient-to-r from-gray-200 to-gray-300 text-gray-700', icon: '🥈', bonus: '15% реферальный бонус', daysInClub: 90, nextLevel: 'Gold', daysToNext: 180 },
-  gold: { label: 'Gold', color: 'bg-gradient-to-r from-amber-100 to-amber-200 text-amber-700', icon: '🥇', bonus: '20% реферальный бонус', daysInClub: 180, nextLevel: 'Platinum', daysToNext: 365 },
-  platinum: { label: 'Platinum', color: 'bg-gradient-to-r from-purple-100 to-purple-200 text-purple-700', icon: '💎', bonus: '30% реферальный бонус', daysInClub: 365, nextLevel: null, daysToNext: null },
-}
-
-// Категории загружаются из API (apiCategories)
-
-// 365 мотивационных цитат на год
+import { ADMIN_IDS, DEFAULT_USER, LOYALTY_BADGES } from '@/lib/constants'
 
 // Тип уведомления
 interface Notification {
@@ -80,7 +52,7 @@ interface Category {
 export default function LibraryPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(true)
-  const [user, setUser] = useState(defaultUser)
+  const [user, setUser] = useState(DEFAULT_USER)
   const [isAdmin, setIsAdmin] = useState(false)
   
   // WebSocket для отслеживания онлайн пользователей
@@ -458,7 +430,7 @@ export default function LibraryPage() {
             uniqueViewed={user.uniqueViewed}
             totalMaterials={user.totalMaterials}
             loyaltyLevel={user.loyaltyLevel}
-            loyaltyBadges={loyaltyBadges}
+            loyaltyBadges={LOYALTY_BADGES}
           />
           
           {/* Карточка подписки */}

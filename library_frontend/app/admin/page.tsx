@@ -7,7 +7,7 @@ import axios from 'axios'
 import { usePresence, Activity as WsActivity, AdminAction as WsAdminAction } from '@/hooks/usePresence'
 import { ADMIN_IDS, ADMIN_GROUP_INFO } from '@/lib/constants'
 import { getLinkType } from '@/lib/utils'
-import { CategoriesTab, HistoryTab } from '@/components/admin'
+import { CategoriesTab, HistoryTab, UsersTab } from '@/components/admin'
 
 // API клиент
 const api = axios.create({
@@ -127,9 +127,6 @@ export default function AdminPage() {
     total: number
     with_push: number
   } | null>(null)
-  const [usersFilter, setUsersFilter] = useState<'all' | 'with_push' | 'no_push'>('all')
-  const [usersSort, setUsersSort] = useState<'recent' | 'most_views' | 'least_views'>('recent')
-  const [usersLimit, setUsersLimit] = useState(10)
   const [copiedUsername, setCopiedUsername] = useState<string | null>(null)
   const [isMenuVisible, setIsMenuVisible] = useState(true)
   const [lastScrollY, setLastScrollY] = useState(0)
@@ -2034,126 +2031,12 @@ export default function AdminPage() {
       
       {/* Users Tab */}
       {activeTab === 'users' && (
-        <div className="bg-white/80 backdrop-blur-xl rounded-2xl border border-[#E8D4BA]/30 overflow-hidden">
-          <div className="p-4 border-b border-[#E8D4BA]/30">
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <h3 className="font-medium text-[#5D4E3A]">Пользователи библиотеки</h3>
-                {usersStats && (
-                  <span className="text-sm text-[#8B8279]">
-                    {usersStats.total} чел • {usersStats.with_push} 🔔
-                  </span>
-                )}
-              </div>
-              {/* Фильтры */}
-              <div className="flex flex-wrap gap-2">
-                {(['all', 'with_push', 'no_push'] as const).map((filter) => (
-                  <button
-                    key={filter}
-                    onClick={() => { setUsersFilter(filter); setUsersLimit(10); }}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-all ${
-                      usersFilter === filter
-                        ? 'bg-[#B08968] text-white'
-                        : 'bg-[#F5E6D3]/50 text-[#8B8279] hover:bg-[#F5E6D3]'
-                    }`}
-                  >
-                    {filter === 'all' && 'Все'}
-                    {filter === 'with_push' && '🔔 Push'}
-                    {filter === 'no_push' && '⚪ Без'}
-                  </button>
-                ))}
-                <span className="text-[#E8D4BA] self-center">|</span>
-                {(['recent', 'most_views', 'least_views'] as const).map((sort) => (
-                  <button
-                    key={sort}
-                    onClick={() => { setUsersSort(sort); setUsersLimit(10); }}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-all ${
-                      usersSort === sort
-                        ? 'bg-[#B08968] text-white'
-                        : 'bg-[#F5E6D3]/50 text-[#8B8279] hover:bg-[#F5E6D3]'
-                    }`}
-                  >
-                    {sort === 'recent' && '🕐 Недавние'}
-                    {sort === 'most_views' && '👁 Больше'}
-                    {sort === 'least_views' && '👁 Меньше'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="divide-y divide-[#E8D4BA]/20">
-            {(() => {
-              const filtered = usersStats?.users
-                .filter(u => {
-                  if (usersFilter === 'with_push') return u.has_push
-                  if (usersFilter === 'no_push') return !u.has_push
-                  return true
-                })
-                .sort((a, b) => {
-                  if (usersSort === 'most_views') return b.views_count - a.views_count
-                  if (usersSort === 'least_views') return a.views_count - b.views_count
-                  return 0 // recent - уже отсортировано с бэка
-                }) || []
-              const displayed = filtered.slice(0, usersLimit)
-              const hasMore = filtered.length > usersLimit
-              
-              return (
-                <>
-                  {displayed.map((user) => (
-                    <div 
-                      key={user.id} 
-                      className="p-4 flex items-center gap-3 hover:bg-[#F5E6D3]/30 transition-colors cursor-pointer"
-                      onClick={() => loadUserDetails(user.telegram_id)}
-                    >
-                      {user.photo_url ? (
-                        <img src={user.photo_url} alt="" className="w-10 h-10 rounded-full" />
-                      ) : (
-                        <div className="w-10 h-10 rounded-full bg-[#B08968] text-white flex items-center justify-center font-medium">
-                          {user.first_name?.charAt(0) || '?'}
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-[#5D4E3A]">{user.first_name || 'Без имени'}</span>
-                          <span className="text-sm">{user.has_push ? '🔔' : '⚪'}</span>
-                        </div>
-                        {user.username && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); copyUsername(user.username!); }}
-                            className="text-sm text-[#8B8279] hover:text-[#B08968] transition-colors"
-                          >
-                            @{user.username} {copiedUsername === user.username && '✓'}
-                          </button>
-                        )}
-                      </div>
-                      <div className="text-right text-sm">
-                        <p className="text-[#5D4E3A]">{user.views_count} 👁</p>
-                        <p className="text-[#8B8279]">{user.favorites_count} ⭐</p>
-                      </div>
-                    </div>
-                  ))}
-                  {hasMore && (
-                    <button
-                      onClick={() => setUsersLimit(prev => prev + 10)}
-                      className="w-full p-4 text-center text-[#B08968] hover:bg-[#F5E6D3]/30 transition-colors font-medium"
-                    >
-                      Показать ещё ({filtered.length - usersLimit} осталось)
-                    </button>
-                  )}
-                  {usersLimit > 10 && (
-                    <button
-                      onClick={() => setUsersLimit(10)}
-                      className="w-full p-3 text-center text-[#8B8279] hover:bg-[#F5E6D3]/30 transition-colors text-sm"
-                    >
-                      Свернуть
-                    </button>
-                  )}
-                </>
-              )
-            })()}
-            {!usersStats && <div className="p-8 text-center text-[#8B8279]">Загрузка...</div>}
-          </div>
-        </div>
+        <UsersTab
+          usersStats={usersStats}
+          onLoadUserDetails={loadUserDetails}
+          onCopyUsername={copyUsername}
+          copiedUsername={copiedUsername}
+        />
       )}
       
       {/* Нижнее меню - только на мобилке */}

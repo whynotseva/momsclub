@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import { usePresence } from '@/hooks/usePresence'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
-import { QuoteOfDay, MobileNav, PushPromoModal, CategoryFilter, SubscriptionCard } from '@/components/library'
+import { QuoteOfDay, MobileNav, PushPromoModal, CategoryFilter, SubscriptionCard, MaterialCard } from '@/components/library'
 
 // Список админов
 const ADMIN_IDS = [534740911, 44054166]
@@ -834,53 +834,15 @@ export default function LibraryPage() {
                   <>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                       {filteredMaterials.slice(0, visibleCount).map((material, index) => (
-                        <div 
-                          key={material.id} 
-                          className="group bg-white/90 rounded-2xl shadow-lg shadow-[#C9A882]/10 hover:shadow-xl hover:shadow-[#C9A882]/20 transition-all duration-500 p-5 cursor-pointer border border-[#E8D4BA]/40 hover:-translate-y-1 relative overflow-hidden animate-fadeIn"
-                          style={{ animationDelay: `${(index % ITEMS_PER_PAGE) * 80}ms` }}
-                        >
-                          {/* Бейджи */}
-                          <div className="absolute top-3 right-3 flex gap-1.5 z-10">
-                            {material.is_featured && (
-                              <div className="bg-gradient-to-r from-amber-400 to-amber-500 text-white text-xs font-bold px-2 py-1 rounded-lg shadow-md">
-                                ⭐ Выбор Полины
-                              </div>
-                            )}
-                            {new Date(material.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) && (
-                              <div className="bg-green-500 text-white text-xs font-bold px-2 py-1 rounded-lg">NEW</div>
-                            )}
-                          </div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); toggleFavorite(material.id) }}
-                            className={`absolute bottom-2 right-2 z-20 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-md ${favoriteIds.has(material.id) ? 'bg-red-500 text-white' : 'bg-white/90 text-gray-400 hover:bg-red-100 hover:text-red-500'}`}
-                          >
-                            <span className="text-base">{favoriteIds.has(material.id) ? '❤️' : '🤍'}</span>
-                          </button>
-                          <div onClick={() => openMaterial(material)}>
-                            {material.cover_image ? (
-                              <img src={material.cover_image} alt={material.title} className="w-full h-24 object-cover rounded-xl mb-3" />
-                            ) : (
-                              <div className="w-full h-24 bg-gradient-to-br from-[#C9A882] to-[#B08968] rounded-xl mb-3 flex items-center justify-center text-3xl">{material.categories?.[0]?.icon || material.category?.icon || '📄'}</div>
-                            )}
-                            <span className="text-xs bg-[#F5E6D3] text-[#8B7355] px-2 py-1 rounded-full font-medium truncate max-w-full block">
-                              {material.categories?.length ? material.categories.slice(0, 2).map(c => c.name).join(' • ') : (material.category?.name || material.format || 'Материал')}
-                            </span>
-                            <h4 className="font-semibold text-[#2D2A26] mt-2 text-sm leading-tight line-clamp-2">{material.title}</h4>
-                            {material.description && <p className="text-xs text-[#8B8279] mt-1 line-clamp-2">{material.description}</p>}
-                            <div className="text-xs text-[#8B8279] mt-2 flex items-center gap-3">
-                              <span className="flex items-center gap-1">
-                                <span>👁️</span>
-                                <span>{material.views}</span>
-                              </span>
-                              {(material.favorites_count ?? 0) > 0 && (
-                                <span className="flex items-center gap-1 text-[#B08968]">
-                                  <span>❤️</span>
-                                  <span>{material.favorites_count}</span>
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
+                        <MaterialCard
+                          key={material.id}
+                          material={material}
+                          isFavorite={favoriteIds.has(material.id)}
+                          isNew={new Date(material.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)}
+                          onOpen={openMaterial}
+                          onToggleFavorite={toggleFavorite}
+                          animationDelay={(index % ITEMS_PER_PAGE) * 80}
+                        />
                       ))}
                     </div>
                     

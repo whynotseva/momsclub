@@ -1,12 +1,30 @@
 'use client'
 
-import { Material } from '@/lib/types'
+// Локальный тип для материала (совместим с разными источниками)
+interface MaterialData {
+  id: number
+  title: string
+  description?: string
+  external_url?: string
+  cover_image?: string
+  is_featured?: boolean
+  is_published?: boolean
+  views: number
+  favorites_count?: number
+  created_at: string
+  category?: { name: string; slug: string; icon: string }
+  categories?: { id?: number; name: string; slug: string; icon: string }[]
+  category_id?: number
+  category_ids?: number[]
+  format?: string
+}
 
 interface MaterialCardProps {
-  material: Material
+  material: MaterialData
   isFavorite: boolean
   isNew?: boolean
-  onOpen: (material: Material) => void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onOpen: (material: any) => void
   onToggleFavorite: (materialId: number) => void
   animationDelay?: number
 }

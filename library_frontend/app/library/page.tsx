@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { usePresence } from '@/hooks/usePresence'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { useLibraryData } from '@/hooks/useLibraryData'
@@ -49,6 +49,35 @@ export default function LibraryPage() {
   
   // Поиск
   const [searchQuery, setSearchQuery] = useState('')
+  
+  // Мемоизированные фильтры
+  const featuredMaterials = useMemo(() => 
+    materials.filter(m => m.is_featured), 
+    [materials]
+  )
+  
+  const filteredMaterials = useMemo(() => 
+    materials
+      .filter(m => {
+        if (activeCategory === 'all') return true
+        if (activeCategory === 'featured') return m.is_featured
+        if (m.categories?.length) {
+          return m.categories.some(c => c.slug === activeCategory)
+        }
+        return m.category?.slug === activeCategory
+      })
+      .filter(m => {
+        if (!searchQuery.trim()) return true
+        const query = searchQuery.toLowerCase()
+        const categoryNames = m.categories?.map(c => c.name.toLowerCase()).join(' ') || m.category?.name.toLowerCase() || ''
+        return (
+          m.title.toLowerCase().includes(query) ||
+          m.description?.toLowerCase().includes(query) ||
+          categoryNames.includes(query)
+        )
+      }),
+    [materials, activeCategory, searchQuery]
+  )
   
   // Пагинация материалов (4 на мобилке, 8 на десктопе)
   const [visibleCount, setVisibleCount] = useState(4) // Начинаем с 4 (мобилка)
@@ -152,7 +181,7 @@ export default function LibraryPage() {
         <FeaturedSection
           title="Выбор Полины"
           icon="⭐"
-          materials={materials.filter(m => m.is_featured)}
+          materials={featuredMaterials}
           gradientFrom="from-amber-50"
           gradientTo="to-orange-50"
           borderColor="border-amber-200/50"
@@ -175,7 +204,7 @@ export default function LibraryPage() {
         <CategoryFilter 
           categories={apiCategories}
           activeCategory={activeCategory}
-          featuredCount={materials.filter(m => m.is_featured).length}
+          featuredCount={featuredMaterials.length}
           onChange={setActiveCategory}
         />
 
@@ -190,107 +219,77 @@ export default function LibraryPage() {
         {/* Результаты поиска */}
         {searchQuery && (
           <p className="text-sm text-[#8B8279] mb-4 -mt-2">
-            🔍 Найдено: {materials.filter(m => 
-              m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-              m.description?.toLowerCase().includes(searchQuery.toLowerCase())
-            ).length} материалов
+            🔍 Найдено: {filteredMaterials.length} материалов
           </p>
         )}
 
-        {/* �� Материалы */}
+        {/* 📚 Материалы */}
         <section className="mb-12">
-          {(() => {
-            const filteredMaterials = materials
-              .filter(m => {
-                if (activeCategory === 'all') return true
-                if (activeCategory === 'featured') return m.is_featured
-                // Проверяем новый массив categories или старое поле category
-                if (m.categories?.length) {
-                  return m.categories.some(c => c.slug === activeCategory)
-                }
-                return m.category?.slug === activeCategory
-              })
-              .filter(m => {
-                if (!searchQuery.trim()) return true
-                const query = searchQuery.toLowerCase()
-                const categoryNames = m.categories?.map(c => c.name.toLowerCase()).join(' ') || m.category?.name.toLowerCase() || ''
-                return (
-                  m.title.toLowerCase().includes(query) ||
-                  m.description?.toLowerCase().includes(query) ||
-                  categoryNames.includes(query)
-                )
-              })
-            
-            return (
-              <>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center space-x-3">
-                    <h3 className="text-2xl font-bold text-[#2D2A26]">
-                      {searchQuery ? '🔍 Результаты поиска' : '📚 Материалы'}
-                    </h3>
-                    <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-semibold">
-                      {filteredMaterials.length} шт.
-                    </span>
-                  </div>
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center space-x-3">
+              <h3 className="text-2xl font-bold text-[#2D2A26]">
+                {searchQuery ? '🔍 Результаты поиска' : '📚 Материалы'}
+              </h3>
+              <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-semibold">
+                {filteredMaterials.length} шт.
+              </span>
+            </div>
+          </div>
+          
+          {filteredMaterials.length === 0 ? (
+            <div className="text-center py-12 bg-white/80 rounded-2xl border border-[#E8D4BA]/40">
+              <div className="text-4xl mb-4">{searchQuery ? '🔍' : '📭'}</div>
+              <p className="text-[#8B8279] mb-2">
+                {searchQuery ? `Ничего не найдено по запросу "${searchQuery}"` : 'Пока нет материалов'}
+              </p>
+              {searchQuery && (
+                <button 
+                  onClick={() => setSearchQuery('')}
+                  className="text-[#B08968] hover:underline text-sm"
+                >
+                  Сбросить поиск
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                {filteredMaterials.slice(0, visibleCount).map((material, index) => (
+                  <MaterialCard
+                    key={material.id}
+                    material={material}
+                    isFavorite={favoriteIds.has(material.id)}
+                    isNew={new Date(material.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)}
+                    onOpen={openMaterial}
+                    onToggleFavorite={toggleFavorite}
+                    animationDelay={(index % ITEMS_PER_PAGE) * 80}
+                  />
+                ))}
+              </div>
+              
+              {/* Кнопки "Показать ещё" / "Скрыть" */}
+              {filteredMaterials.length > ITEMS_PER_PAGE && (
+                <div className="flex justify-center gap-3 mt-6">
+                  {visibleCount < filteredMaterials.length && (
+                    <button
+                      onClick={() => setVisibleCount(prev => prev + ITEMS_PER_PAGE)}
+                      className="px-6 py-3 bg-gradient-to-r from-[#B08968] to-[#A67C52] text-white font-medium rounded-xl shadow-lg shadow-[#B08968]/25 hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300"
+                    >
+                      Показать ещё ({Math.min(ITEMS_PER_PAGE, filteredMaterials.length - visibleCount)})
+                    </button>
+                  )}
+                  {visibleCount > ITEMS_PER_PAGE && (
+                    <button
+                      onClick={() => setVisibleCount(ITEMS_PER_PAGE)}
+                      className="px-6 py-3 bg-white/90 text-[#5C5650] font-medium rounded-xl border border-[#E8D4BA]/40 hover:bg-[#F5E6D3] hover:-translate-y-0.5 transition-all duration-300"
+                    >
+                      Скрыть
+                    </button>
+                  )}
                 </div>
-                
-                {filteredMaterials.length === 0 ? (
-                  <div className="text-center py-12 bg-white/80 rounded-2xl border border-[#E8D4BA]/40">
-                    <div className="text-4xl mb-4">{searchQuery ? '🔍' : '📭'}</div>
-                    <p className="text-[#8B8279] mb-2">
-                      {searchQuery ? `Ничего не найдено по запросу "${searchQuery}"` : 'Пока нет материалов'}
-                    </p>
-                    {searchQuery && (
-                      <button 
-                        onClick={() => setSearchQuery('')}
-                        className="text-[#B08968] hover:underline text-sm"
-                      >
-                        Сбросить поиск
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                      {filteredMaterials.slice(0, visibleCount).map((material, index) => (
-                        <MaterialCard
-                          key={material.id}
-                          material={material}
-                          isFavorite={favoriteIds.has(material.id)}
-                          isNew={new Date(material.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)}
-                          onOpen={openMaterial}
-                          onToggleFavorite={toggleFavorite}
-                          animationDelay={(index % ITEMS_PER_PAGE) * 80}
-                        />
-                      ))}
-                    </div>
-                    
-                    {/* Кнопки "Показать ещё" / "Скрыть" */}
-                    {filteredMaterials.length > ITEMS_PER_PAGE && (
-                      <div className="flex justify-center gap-3 mt-6">
-                        {visibleCount < filteredMaterials.length && (
-                          <button
-                            onClick={() => setVisibleCount(prev => prev + ITEMS_PER_PAGE)}
-                            className="px-6 py-3 bg-gradient-to-r from-[#B08968] to-[#A67C52] text-white font-medium rounded-xl shadow-lg shadow-[#B08968]/25 hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300"
-                          >
-                            Показать ещё ({Math.min(ITEMS_PER_PAGE, filteredMaterials.length - visibleCount)})
-                          </button>
-                        )}
-                        {visibleCount > ITEMS_PER_PAGE && (
-                          <button
-                            onClick={() => setVisibleCount(ITEMS_PER_PAGE)}
-                            className="px-6 py-3 bg-white/90 text-[#5C5650] font-medium rounded-xl border border-[#E8D4BA]/40 hover:bg-[#F5E6D3] hover:-translate-y-0.5 transition-all duration-300"
-                          >
-                            Скрыть
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </>
-                )}
-              </>
-            )
-          })()}
+              )}
+            </>
+          )}
         </section>
 
         {/* Категории из API */}

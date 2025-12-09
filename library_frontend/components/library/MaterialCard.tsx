@@ -1,5 +1,7 @@
 'use client'
 
+import { memo } from 'react'
+
 // Локальный тип для материала (совместим с разными источниками)
 interface MaterialData {
   id: number
@@ -32,8 +34,9 @@ interface MaterialCardProps {
 
 /**
  * Карточка материала
+ * Обёрнута в memo для предотвращения лишних ререндеров
  */
-export function MaterialCard({
+export const MaterialCard = memo(function MaterialCard({
   material,
   isFavorite,
   isNew = false,
@@ -119,4 +122,4 @@ export function MaterialCard({
       </div>
     </div>
   )
-}
+})

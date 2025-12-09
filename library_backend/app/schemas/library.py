@@ -161,6 +161,7 @@ class MaterialListItem(BaseModel):
     duration: Optional[int] = None
     viral_score: Optional[int] = None
     cover_image: Optional[str] = None
+    cover_url: Optional[str] = None  # URL для оптимизированной загрузки обложки
     is_featured: bool
     is_published: bool = True
     views: int

@@ -14,6 +14,7 @@ interface Material {
   category?: { name: string; icon: string; slug: string }
   format: string
   cover_image?: string
+  cover_url?: string  // Оптимизированный URL обложки
   views: number
   created_at: string
 }
@@ -191,8 +192,8 @@ export default function FavoritesPage() {
                   <span className="text-lg">❤️</span>
                 </button>
                 <div onClick={() => openMaterial(material)} className="cursor-pointer">
-                  {material.cover_image ? (
-                    <img src={material.cover_image} alt={material.title} className="w-full h-24 object-cover rounded-xl mb-3" />
+                  {(material.cover_url || material.cover_image) ? (
+                    <img src={material.cover_url || material.cover_image} alt={material.title} className="w-full h-24 object-cover rounded-xl mb-3" />
                   ) : (
                     <div className="w-full h-24 bg-gradient-to-br from-[#C9A882] to-[#B08968] rounded-xl mb-3 flex items-center justify-center text-3xl">
                       {material.category?.icon || '📄'}

@@ -14,8 +14,9 @@ from sqlalchemy import select, func, or_, and_, distinct, text
 from app.database import get_db
 from app.schemas import Material, MaterialListItem, MaterialCreate, MaterialUpdate, PaginatedResponse
 from app.models.library_models import LibraryMaterial, LibraryCategory, LibraryTag, LibraryView, AdminActivityLog, materials_categories
-from app.api.dependencies import get_current_user_with_subscription
+from app.api.dependencies import get_current_user_with_subscription, get_current_user
 from app.api.websocket import broadcast_admin_action
+from app.api.push import send_push_notification_sync
 
 
 def log_admin_action(db: Session, user: dict, action: str, entity_type: str, 
@@ -48,6 +49,20 @@ router = APIRouter(prefix="/materials", tags=["Материалы"])
 
 # Список админов
 ADMIN_IDS = [534740911, 44054166]  # Полина и Всеволод
+
+# URL API для генерации ссылок на обложки
+API_BASE_URL = "https://api.librarymomsclub.ru/api"
+
+
+def add_cover_url(item: dict) -> dict:
+    """
+    Добавляет cover_url и убирает base64 из cover_image для оптимизации.
+    Вызывать для каждого материала перед отправкой клиенту.
+    """
+    if item.get("cover_image"):
+        item["cover_url"] = f"{API_BASE_URL}/materials/{item['id']}/cover"
+        item["cover_image"] = None  # Не передаём тяжёлый base64
+    return item
 
 
 @router.get("", response_model=PaginatedResponse)
@@ -129,8 +144,6 @@ def get_materials(
         query = query.order_by(LibraryMaterial.views.desc())
     elif sort == "title_asc":
         query = query.order_by(LibraryMaterial.title.asc())
-    elif sort == "random":
-        query = query.order_by(func.random())
     
     # Пагинация
     offset = (page - 1) * page_size
@@ -139,10 +152,8 @@ def get_materials(
     # Выполняем запрос
     materials = db.execute(query).scalars().all()
     
-    # Логируем favorites_count для отладки
-    items = [m.to_dict() for m in materials]
-    for item in items[:3]:
-        print(f"Material {item['id']}: favorites_count = {item.get('favorites_count')}")
+    # Конвертируем в dict и добавляем cover_url
+    items = [add_cover_url(m.to_dict()) for m in materials]
     
     # Используем to_dict() для правильной сериализации категорий
     return PaginatedResponse(
@@ -243,7 +254,8 @@ def get_featured_materials(
         .limit(limit)
     ).scalars().all()
     
-    return [MaterialListItem.model_validate(m) for m in materials]
+    # Оптимизация: добавляем cover_url, убираем base64
+    return [add_cover_url(m.to_dict()) for m in materials]
 
 
 @router.get("/popular/list", response_model=List[MaterialListItem])
@@ -264,7 +276,8 @@ def get_popular_materials(
         .limit(limit)
     ).scalars().all()
     
-    return [MaterialListItem.model_validate(m) for m in materials]
+    # Оптимизация: добавляем cover_url, убираем base64
+    return [add_cover_url(m.to_dict()) for m in materials]
 
 
 # ============== ИЗБРАННОЕ И ИСТОРИЯ ==============
@@ -287,7 +300,8 @@ def get_my_favorites(
         .order_by(LibraryFavorite.created_at.desc())
     ).scalars().all()
     
-    return [MaterialListItem.model_validate(m) for m in materials]
+    # Оптимизация: добавляем cover_url, убираем base64
+    return [add_cover_url(m.to_dict()) for m in materials]
 
 
 @router.post("/{material_id}/favorite")
@@ -460,7 +474,8 @@ def get_my_history(
     materials_dict = {m.id: m for m in materials}
     result = [materials_dict[mid] for mid in material_ids if mid in materials_dict]
     
-    return [MaterialListItem.model_validate(m) for m in result]
+    # Оптимизация: добавляем cover_url, убираем base64
+    return [add_cover_url(m.to_dict()) for m in result]
 
 
 @router.get("/stats/my")
@@ -555,6 +570,13 @@ def create_material(
     
     # Логируем действие и рассылаем через WebSocket
     log_admin_action(db, current_user, 'create', 'material', material.id, material.title, background_tasks)
+    
+    # Push при создании с публикацией
+    if material.is_published:
+        try:
+            send_push_notification_sync(db, '🆕 ' + material.title[:40], 'Новый материал в библиотеке!', '/library')
+        except:
+            pass
     
     return material.to_dict(include_content=True)
 
@@ -706,7 +728,7 @@ def get_my_notifications(
             "type": n[1],
             "title": n[2],
             "text": n[3],
-            "link": n[4],
+            "external_url": n[4],
             "is_read": bool(n[5]),
             "created_at": n[6]
         })
@@ -753,3 +775,160 @@ def mark_all_notifications_read(
     db.commit()
     
     return {"status": "ok"}
+
+
+@router.get("/feed/recommendations")
+def get_recommendations(
+    limit: int = 6,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Персональные рекомендации на основе просмотров пользователя.
+    Логика: категории просмотренных → похожие материалы которые не смотрел.
+    """
+    user_id = current_user["user_id"]
+    
+    # 1. Получаем категории материалов которые пользователь смотрел
+    viewed_categories = db.execute(text("""
+        SELECT DISTINCT m.category_id 
+        FROM library_views v
+        JOIN library_materials m ON m.id = v.material_id
+        WHERE v.user_id = :user_id AND m.category_id IS NOT NULL
+    """), {"user_id": user_id}).fetchall()
+    
+    category_ids = [c[0] for c in viewed_categories]
+    
+    # 2. Получаем ID материалов которые пользователь уже смотрел
+    viewed_materials = db.execute(text("""
+        SELECT DISTINCT material_id FROM library_views WHERE user_id = :user_id
+    """), {"user_id": user_id}).fetchall()
+    
+    viewed_ids = [m[0] for m in viewed_materials]
+    
+    # 3. Если нет истории - возвращаем популярные
+    if not category_ids:
+        popular = db.execute(text("""
+            SELECT m.id, m.title, m.description, m.cover_image, c.icon, m.external_url, m.category_id, c.name as category_name,
+                   (SELECT COUNT(*) FROM library_views WHERE material_id = m.id) as views_count
+            FROM library_materials m
+            LEFT JOIN library_categories c ON c.id = m.category_id
+            WHERE m.is_published = 1
+            ORDER BY views_count DESC
+            LIMIT :limit
+        """), {"limit": limit}).fetchall()
+        
+        # Оптимизация: добавляем cover_url, убираем base64
+        materials_list = [
+            add_cover_url({"id": r[0], "title": r[1], "description": r[2], "cover_image": r[3], "icon": r[4], "external_url": r[5], 
+             "category_id": r[6], "category_name": r[7], "views": r[8]}) for r in popular
+        ]
+        return {
+            "type": "popular",
+            "title": "Популярное",
+            "materials": materials_list
+        }
+    
+    # 4. Ищем материалы из тех же категорий, которые пользователь НЕ смотрел
+    placeholders = ",".join([f":cat{i}" for i in range(len(category_ids))])
+    viewed_placeholders = ",".join([f":viewed{i}" for i in range(len(viewed_ids))]) if viewed_ids else "0"
+    
+    params = {f"cat{i}": cid for i, cid in enumerate(category_ids)}
+    params.update({f"viewed{i}": vid for i, vid in enumerate(viewed_ids)})
+    params["limit"] = limit
+    
+    query = f"""
+        SELECT m.id, m.title, m.description, m.cover_image, c.icon, m.external_url, m.category_id, c.name as category_name,
+               (SELECT COUNT(*) FROM library_views WHERE material_id = m.id) as views_count
+        FROM library_materials m
+        LEFT JOIN library_categories c ON c.id = m.category_id
+        WHERE m.is_published = 1
+          AND m.category_id IN ({placeholders})
+          AND m.id NOT IN ({viewed_placeholders})
+        ORDER BY views_count DESC
+        LIMIT :limit
+    """
+    
+    recommendations = db.execute(text(query), params).fetchall()
+    
+    # 5. Если мало рекомендаций - добавляем популярные
+    if len(recommendations) < limit:
+        extra_params = {f"viewed{i}": vid for i, vid in enumerate(viewed_ids)} if viewed_ids else {}
+        extra_params["limit"] = limit - len(recommendations)
+        extra_viewed = ",".join([f":viewed{i}" for i in range(len(viewed_ids))]) if viewed_ids else "0"
+        
+        extra = db.execute(text(f"""
+            SELECT m.id, m.title, m.description, m.cover_image, c.icon, m.external_url, m.category_id, c.name as category_name,
+                   (SELECT COUNT(*) FROM library_views WHERE material_id = m.id) as views_count
+            FROM library_materials m
+            LEFT JOIN library_categories c ON c.id = m.category_id
+            WHERE m.is_published = 1 AND m.id NOT IN ({extra_viewed})
+            ORDER BY views_count DESC
+            LIMIT :limit
+        """), extra_params).fetchall()
+        
+        existing_ids = {r[0] for r in recommendations}
+        for r in extra:
+            if r[0] not in existing_ids:
+                recommendations.append(r)
+    
+    # Оптимизация: добавляем cover_url, убираем base64
+    materials_list = [
+        add_cover_url({"id": r[0], "title": r[1], "description": r[2], "cover_image": r[3], "icon": r[4], "external_url": r[5], 
+         "category_id": r[6], "category_name": r[7], "views": r[8]}) for r in recommendations[:limit]
+    ]
+    return {
+        "type": "personalized",
+        "title": "Вам понравится",
+        "materials": materials_list
+    }
+
+
+# ============================================
+# ЭНДПОИНТ ДЛЯ ОБЛОЖКИ (оптимизация загрузки)
+# ============================================
+
+from fastapi.responses import Response, RedirectResponse
+import base64
+
+@router.get("/{material_id}/cover")
+def get_material_cover(
+    material_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Получить обложку материала как изображение.
+    Возвращает бинарные данные картинки вместо base64.
+    Кэшируется браузером на 1 год.
+    """
+    material = db.query(LibraryMaterial).filter(LibraryMaterial.id == material_id).first()
+    
+    if not material:
+        raise HTTPException(status_code=404, detail="Материал не найден")
+    
+    if not material.cover_image:
+        raise HTTPException(status_code=404, detail="У материала нет обложки")
+    
+    cover = material.cover_image
+    
+    # Если это base64 data URL
+    if cover.startswith('data:'):
+        try:
+            # Формат: data:image/jpeg;base64,/9j/4AAQ...
+            header, data = cover.split(',', 1)
+            mime_type = header.split(':')[1].split(';')[0]
+            image_data = base64.b64decode(data)
+            return Response(
+                content=image_data, 
+                media_type=mime_type,
+                headers={"Cache-Control": "public, max-age=31536000"}  # Кэш на 1 год
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Ошибка обработки изображения: {str(e)}")
+    
+    # Если это внешний URL — делаем редирект
+    if cover.startswith('http://') or cover.startswith('https://'):
+        return RedirectResponse(url=cover, status_code=302)
+    
+    # Неизвестный формат
+    raise HTTPException(status_code=400, detail="Неподдерживаемый формат обложки")

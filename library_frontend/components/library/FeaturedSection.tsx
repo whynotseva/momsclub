@@ -4,6 +4,7 @@ interface MaterialItem {
   id: number
   title: string
   cover_image?: string
+  cover_url?: string  // Оптимизированный URL обложки
   category?: { name: string; icon: string }
   categories?: { name: string; icon: string }[]
 }
@@ -50,8 +51,8 @@ export function FeaturedSection({
             onClick={() => onMaterialClick(material)}
             className={`flex-shrink-0 w-40 bg-gradient-to-br ${gradientFrom} ${gradientTo} rounded-xl p-3 border ${borderColor} hover:shadow-lg hover:-translate-y-0.5 transition-all cursor-pointer`}
           >
-            {material.cover_image ? (
-              <img src={material.cover_image} alt={material.title} className="w-full h-20 object-cover rounded-lg mb-2" />
+            {(material.cover_url || material.cover_image) ? (
+              <img src={material.cover_url || material.cover_image} alt={material.title} className="w-full h-20 object-cover rounded-lg mb-2" />
             ) : (
               <div className={`w-full h-20 bg-gradient-to-br ${gradientFrom.replace('50', '200')} ${gradientTo.replace('50', '300')} rounded-lg mb-2 flex items-center justify-center text-2xl`}>
                 {material.categories?.[0]?.icon || material.category?.icon || icon}

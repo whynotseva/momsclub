@@ -7,6 +7,7 @@ interface MaterialData {
   description?: string
   external_url?: string
   cover_image?: string
+  cover_url?: string  // Оптимизированный URL обложки
   is_featured?: boolean
   is_published?: boolean
   views: number
@@ -79,9 +80,9 @@ export function MaterialCard({
 
       {/* Контент карточки */}
       <div onClick={() => onOpen(material)}>
-        {material.cover_image ? (
+        {(material.cover_url || material.cover_image) ? (
           <img
-            src={material.cover_image}
+            src={material.cover_url || material.cover_image}
             alt={material.title}
             className="w-full h-24 object-cover rounded-xl mb-3"
           />

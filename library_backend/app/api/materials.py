@@ -19,6 +19,7 @@ from app.api.push import send_push_notification_sync
 # Импорты из сервисного слоя
 from app.services import (
     MaterialService, 
+    RecommendationService,
     add_cover_url, 
     check_admin, 
     log_admin_action,
@@ -629,105 +630,9 @@ def get_recommendations(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Персональные рекомендации на основе просмотров пользователя.
-    Логика: категории просмотренных → похожие материалы которые не смотрел.
-    """
-    user_id = current_user["user_id"]
-    
-    # 1. Получаем категории материалов которые пользователь смотрел
-    viewed_categories = db.execute(text("""
-        SELECT DISTINCT m.category_id 
-        FROM library_views v
-        JOIN library_materials m ON m.id = v.material_id
-        WHERE v.user_id = :user_id AND m.category_id IS NOT NULL
-    """), {"user_id": user_id}).fetchall()
-    
-    category_ids = [c[0] for c in viewed_categories]
-    
-    # 2. Получаем ID материалов которые пользователь уже смотрел
-    viewed_materials = db.execute(text("""
-        SELECT DISTINCT material_id FROM library_views WHERE user_id = :user_id
-    """), {"user_id": user_id}).fetchall()
-    
-    viewed_ids = [m[0] for m in viewed_materials]
-    
-    # 3. Если нет истории - возвращаем популярные
-    if not category_ids:
-        popular = db.execute(text("""
-            SELECT m.id, m.title, m.description, m.cover_image, c.icon, m.external_url, m.category_id, c.name as category_name,
-                   (SELECT COUNT(*) FROM library_views WHERE material_id = m.id) as views_count
-            FROM library_materials m
-            LEFT JOIN library_categories c ON c.id = m.category_id
-            WHERE m.is_published = 1
-            ORDER BY views_count DESC
-            LIMIT :limit
-        """), {"limit": limit}).fetchall()
-        
-        # Оптимизация: добавляем cover_url, убираем base64
-        materials_list = [
-            add_cover_url({"id": r[0], "title": r[1], "description": r[2], "cover_image": r[3], "icon": r[4], "external_url": r[5], 
-             "category_id": r[6], "category_name": r[7], "views": r[8]}) for r in popular
-        ]
-        return {
-            "type": "popular",
-            "title": "Популярное",
-            "materials": materials_list
-        }
-    
-    # 4. Ищем материалы из тех же категорий, которые пользователь НЕ смотрел
-    placeholders = ",".join([f":cat{i}" for i in range(len(category_ids))])
-    viewed_placeholders = ",".join([f":viewed{i}" for i in range(len(viewed_ids))]) if viewed_ids else "0"
-    
-    params = {f"cat{i}": cid for i, cid in enumerate(category_ids)}
-    params.update({f"viewed{i}": vid for i, vid in enumerate(viewed_ids)})
-    params["limit"] = limit
-    
-    query = f"""
-        SELECT m.id, m.title, m.description, m.cover_image, c.icon, m.external_url, m.category_id, c.name as category_name,
-               (SELECT COUNT(*) FROM library_views WHERE material_id = m.id) as views_count
-        FROM library_materials m
-        LEFT JOIN library_categories c ON c.id = m.category_id
-        WHERE m.is_published = 1
-          AND m.category_id IN ({placeholders})
-          AND m.id NOT IN ({viewed_placeholders})
-        ORDER BY views_count DESC
-        LIMIT :limit
-    """
-    
-    recommendations = db.execute(text(query), params).fetchall()
-    
-    # 5. Если мало рекомендаций - добавляем популярные
-    if len(recommendations) < limit:
-        extra_params = {f"viewed{i}": vid for i, vid in enumerate(viewed_ids)} if viewed_ids else {}
-        extra_params["limit"] = limit - len(recommendations)
-        extra_viewed = ",".join([f":viewed{i}" for i in range(len(viewed_ids))]) if viewed_ids else "0"
-        
-        extra = db.execute(text(f"""
-            SELECT m.id, m.title, m.description, m.cover_image, c.icon, m.external_url, m.category_id, c.name as category_name,
-                   (SELECT COUNT(*) FROM library_views WHERE material_id = m.id) as views_count
-            FROM library_materials m
-            LEFT JOIN library_categories c ON c.id = m.category_id
-            WHERE m.is_published = 1 AND m.id NOT IN ({extra_viewed})
-            ORDER BY views_count DESC
-            LIMIT :limit
-        """), extra_params).fetchall()
-        
-        existing_ids = {r[0] for r in recommendations}
-        for r in extra:
-            if r[0] not in existing_ids:
-                recommendations.append(r)
-    
-    # Оптимизация: добавляем cover_url, убираем base64
-    materials_list = [
-        add_cover_url({"id": r[0], "title": r[1], "description": r[2], "cover_image": r[3], "icon": r[4], "external_url": r[5], 
-         "category_id": r[6], "category_name": r[7], "views": r[8]}) for r in recommendations[:limit]
-    ]
-    return {
-        "type": "personalized",
-        "title": "Вам понравится",
-        "materials": materials_list
-    }
+    """Персональные рекомендации на основе просмотров пользователя"""
+    service = RecommendationService(db)
+    return service.get_recommendations(current_user["user_id"], limit)
 
 
 # ============================================

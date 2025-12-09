@@ -11,3 +11,5 @@ from .material_service import (
     ADMIN_IDS,
     API_BASE_URL,
 )
+
+from .recommendation_service import RecommendationService

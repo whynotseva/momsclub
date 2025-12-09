@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 import { usePresence } from '@/hooks/usePresence'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { useLibraryData } from '@/hooks/useLibraryData'
+import { useScrollVisibility } from '@/hooks/useScrollVisibility'
+import { LoadingSpinner } from '@/components/shared'
 import { QuoteOfDay, MobileNav, PushPromoModal, CategoryFilter, SubscriptionCard, MaterialCard, Header, FeaturedSection, WelcomeCard, SearchBar } from '@/components/library'
 import { LOYALTY_BADGES } from '@/lib/constants'
 
@@ -43,9 +45,7 @@ export default function LibraryPage() {
   const [showPushPromo, setShowPushPromo] = useState(false)
   
   // Скролл для скрытия/показа меню
-  const [showHeader, setShowHeader] = useState(true)
-  const [showMobileNav, setShowMobileNav] = useState(true)
-  const [lastScrollY, setLastScrollY] = useState(0)
+  const isVisible = useScrollVisibility()
   
   // Поиск
   const [searchQuery, setSearchQuery] = useState('')
@@ -92,44 +92,8 @@ export default function LibraryPage() {
     }
   }, [loading, pushSupported, pushSubscribed, pushLoading])
 
-  // Отслеживание скролла для скрытия/показа меню
-  useEffect(() => {
-    const handleScroll = () => {
-      const currentScrollY = window.scrollY
-      const scrollDiff = currentScrollY - lastScrollY
-      
-      // Показываем меню если скроллим вверх или в самом верху
-      if (currentScrollY < 50) {
-        setShowHeader(true)
-        setShowMobileNav(true)
-      } else if (scrollDiff > 10) {
-        // Скроллим вниз — скрываем
-        setShowHeader(false)
-        setShowMobileNav(false)
-      } else if (scrollDiff < -10) {
-        // Скроллим вверх — показываем
-        setShowHeader(true)
-        setShowMobileNav(true)
-      }
-      
-      setLastScrollY(currentScrollY)
-    }
-
-    window.addEventListener('scroll', handleScroll, { passive: true })
-    return () => window.removeEventListener('scroll', handleScroll)
-  }, [lastScrollY])
-
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-[#FDFCFA] via-[#FBF8F3] to-[#F5EFE6] flex flex-col items-center justify-center">
-        <img 
-          src="/logolibrary.svg" 
-          alt="LibriMomsClub" 
-          className="h-20 sm:h-24 w-auto mb-4 animate-pulse"
-        />
-        <p className="text-[#8B8279] text-sm">Загрузка...</p>
-      </div>
-    )
+    return <LoadingSpinner />
   }
 
   return (
@@ -142,7 +106,7 @@ export default function LibraryPage() {
       <Header
         user={{ name: user.name, avatar: user.avatar, notifications: user.notifications }}
         isAdmin={isAdmin}
-        isVisible={showHeader}
+        isVisible={isVisible}
         notifications={notifications}
         showNotifications={showNotifications}
         showProfileMenu={showProfileMenu}
@@ -369,7 +333,7 @@ export default function LibraryPage() {
       />
 
       {/* Mobile Navigation */}
-      <MobileNav activePage="library" isPWA={isPWA} isVisible={showMobileNav} />
+      <MobileNav activePage="library" isPWA={isPWA} isVisible={isVisible} />
     </div>
   )
 }

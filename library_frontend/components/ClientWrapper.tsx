@@ -2,6 +2,7 @@
 
 import { ReactNode, useEffect } from 'react'
 import { AuthProvider } from '@/contexts/AuthContext'
+import { SubscriptionGuard } from '@/components/shared'
 
 export default function ClientWrapper({ children }: { children: ReactNode }) {
   // Регистрация Service Worker для Push уведомлений
@@ -13,5 +14,11 @@ export default function ClientWrapper({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  return <AuthProvider>{children}</AuthProvider>
+  return (
+    <AuthProvider>
+      <SubscriptionGuard>
+        {children}
+      </SubscriptionGuard>
+    </AuthProvider>
+  )
 }

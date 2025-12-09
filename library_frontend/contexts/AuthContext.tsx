@@ -12,6 +12,7 @@ interface User {
   username?: string
   telegramId?: number
   subscriptionDaysLeft: number
+  hasSubscription: boolean
 }
 
 interface AuthContextType {
@@ -19,6 +20,7 @@ interface AuthContextType {
   loading: boolean
   isAuthenticated: boolean
   isAdmin: boolean
+  hasSubscription: boolean
   logout: () => void
   refreshUser: () => Promise<void>
 }
@@ -74,14 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const userData = meResponse.data
       const subData = subResponse.data
       
-      // Проверяем подписку
-      if (!subData.has_active_subscription) {
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('user')
-        alert('Ваша подписка истекла. Продлите подписку через @momsclubsubscribe_bot')
-        router.push('/login')
-        return
-      }
+      // Сохраняем статус подписки (но НЕ блокируем вход)
+      const hasActiveSub = subData.has_active_subscription
 
       const userIsAdmin = ADMIN_IDS.includes(userData.telegram_id)
       
@@ -91,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         username: userData.username,
         telegramId: userData.telegram_id,
         subscriptionDaysLeft: subData.days_left || 0,
+        hasSubscription: hasActiveSub,
       })
       setIsAdmin(userIsAdmin)
       
@@ -110,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             username: userData.username,
             telegramId: userData.telegram_id,
             subscriptionDaysLeft: 0,
+            hasSubscription: false, // fallback — предполагаем нет
           })
           setIsAdmin(ADMIN_IDS.includes(userData.telegram_id))
         } catch {
@@ -135,6 +133,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         isAuthenticated: !!user,
         isAdmin,
+        hasSubscription: user?.hasSubscription ?? false,
         logout,
         refreshUser: loadUser,
       }}

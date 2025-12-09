@@ -146,15 +146,12 @@ def telegram_login(
     has_active_subscription = subscription_result is not None
     subscription_end = subscription_result[2] if subscription_result else None
     
-    # Проверяем что есть активная подписка
-    if not has_active_subscription:
-        print(f"❌ No active subscription for user_id={user_id}, telegram_id={telegram_id}")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="У вас нет активной подписки MomsClub. Оформите подписку через @momsclubsubscribe_bot"
-        )
-    
-    print(f"✅ User {first_name} ({telegram_id}) logged in, subscription until {subscription_end}")
+    # ИЗМЕНЕНО: Пускаем пользователя даже без подписки
+    # Доступ к библиотеке ограничивается на фронтенде
+    if has_active_subscription:
+        print(f"✅ User {first_name} ({telegram_id}) logged in, subscription until {subscription_end}")
+    else:
+        print(f"⚠️ User {first_name} ({telegram_id}) logged in WITHOUT subscription (profile only)")
     
     # Создаём JWT токен
     access_token = create_access_token(

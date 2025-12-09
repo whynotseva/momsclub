@@ -23,12 +23,14 @@ export interface Material {
   title: string
   description?: string
   external_url?: string
+  content?: string // HTML контент для редактора
   category_id?: number // Deprecated
   category?: Category // Deprecated, первая категория
-  category_ids?: number[] // Массив ID категорий
+  category_ids: number[] // Массив ID категорий
   categories?: Category[] // Массив категорий
-  format?: string
+  format: string
   cover_image?: string
+  cover_url?: string // Оптимизированный URL обложки
   is_published: boolean
   is_featured: boolean
   views: number
@@ -129,6 +131,15 @@ export interface AdminAction {
   entity_title?: string
   details?: string
   created_at: string
+}
+
+/** Админ пользователь */
+export interface AdminUser {
+  telegram_id: number
+  first_name: string
+  username?: string
+  admin_group?: string
+  photo_url?: string
 }
 
 // ==================== ХЕЛПЕРЫ ====================

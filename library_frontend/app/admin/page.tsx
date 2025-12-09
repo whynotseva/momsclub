@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import axios from 'axios'
 import { usePresence, Activity as WsActivity, AdminAction as WsAdminAction } from '@/hooks/usePresence'
 import { ADMIN_IDS, ADMIN_GROUP_INFO } from '@/lib/constants'
+import { Category, Material, Stats, Activity, AdminAction, AdminUser } from '@/lib/types'
 import { CategoriesTab, HistoryTab, UsersTab, MaterialsTab, MaterialFormModal, CategoryFormModal, StatsTab } from '@/components/admin'
 
 // API клиент
@@ -22,74 +23,7 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// Типы
-interface Category {
-  id: number
-  name: string
-  slug: string
-  icon: string
-  description?: string
-}
-
-interface Material {
-  id: number
-  title: string
-  description?: string
-  external_url?: string  // Ссылка на Notion или Telegram
-  content?: string
-  category_id?: number  // Deprecated
-  category_ids: number[]  // Новое: массив ID категорий
-  categories?: Category[]  // Новое: массив категорий
-  format: string
-  cover_image?: string
-  is_published: boolean
-  is_featured: boolean
-  created_at: string
-  views: number
-}
-
-interface Stats {
-  materials: { total: number; published: number; drafts: number }
-  views_total: number
-  favorites_total: number
-  categories_total: number
-}
-
-interface Activity {
-  type: 'view' | 'favorite' | 'favorite_add' | 'favorite_remove'
-  created_at: string
-  user: {
-    telegram_id: number
-    first_name: string
-    username?: string
-    photo_url?: string
-  }
-  material: {
-    id: number
-    title: string
-    icon: string
-  }
-}
-
-interface AdminAction {
-  id: number
-  admin_id: number
-  admin_name: string
-  action: 'create' | 'edit' | 'delete' | 'publish' | 'unpublish'
-  entity_type: 'material' | 'category' | 'tag'
-  entity_id?: number
-  entity_title?: string
-  details?: string
-  created_at: string
-}
-
-interface AdminUser {
-  telegram_id: number
-  first_name: string
-  username?: string
-  admin_group?: string
-  photo_url?: string
-}
+// Типы импортированы из @/lib/types
 
 export default function AdminPage() {
   const [isAdmin, setIsAdmin] = useState(false)
@@ -499,7 +433,7 @@ export default function AdminPage() {
       external_url: material.external_url || '',
       content: material.content || '',
       category_ids: material.category_ids || (material.category_id ? [material.category_id] : []),
-      format: material.format,
+      format: material.format || 'article',
       cover_image: material.cover_image || '',
       is_published: material.is_published,
       is_featured: material.is_featured

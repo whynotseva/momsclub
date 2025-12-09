@@ -2,13 +2,16 @@
 Сервис для админ-функций библиотеки.
 """
 
-from typing import Dict, Any
+import logging
+from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 
 from app.models.library_models import (
     LibraryMaterial, LibraryCategory, LibraryView, LibraryFavorite
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Список админов

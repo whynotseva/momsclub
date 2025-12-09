@@ -2,11 +2,14 @@
 Сервис для персональных рекомендаций материалов.
 """
 
+import logging
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.services.material_service import add_cover_url
+
+logger = logging.getLogger(__name__)
 
 
 class RecommendationService:

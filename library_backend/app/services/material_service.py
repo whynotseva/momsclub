@@ -3,6 +3,7 @@
 Содержит бизнес-логику, отделённую от роутов API.
 """
 
+import logging
 from typing import List, Optional, Dict, Any
 from math import ceil
 from datetime import datetime
@@ -15,6 +16,8 @@ from app.models.library_models import (
     LibraryFavorite, AdminActivityLog
 )
 
+# Логгер
+logger = logging.getLogger(__name__)
 
 # Константы
 ADMIN_IDS = [534740911, 44054166]  # Полина и Всеволод
@@ -155,6 +158,7 @@ class MaterialService:
         ).scalar_one_or_none()
         
         if not material:
+            logger.warning(f"Material {material_id} not found for view recording")
             return False
         
         # Создаём запись просмотра
@@ -169,6 +173,7 @@ class MaterialService:
         material.views += 1
         
         self.db.commit()
+        logger.debug(f"View recorded: material={material_id}, user={user_id}")
         return True
     
     def get_featured(self, limit: int = 10) -> List[dict]:
@@ -222,6 +227,8 @@ def log_admin_action(
     db.add(log_entry)
     db.commit()
     db.refresh(log_entry)
+    
+    logger.info(f"Admin action: {admin_name} {action} {entity_type} #{entity_id} '{entity_title}'")
     
     # Рассылаем через WebSocket
     if background_tasks:

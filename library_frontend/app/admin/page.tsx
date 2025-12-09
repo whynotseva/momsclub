@@ -1,95 +1,40 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import axios from 'axios'
 import { usePresence, Activity as WsActivity, AdminAction as WsAdminAction } from '@/hooks/usePresence'
+import { useAdminData } from '@/hooks/useAdminData'
 import { ADMIN_IDS, ADMIN_GROUP_INFO } from '@/lib/constants'
-import { Category, Material, Stats, Activity, AdminAction, AdminUser } from '@/lib/types'
+import { Category, Material, Activity, AdminAction, AdminUser } from '@/lib/types'
 import { CategoriesTab, HistoryTab, UsersTab, MaterialsTab, MaterialFormModal, CategoryFormModal, StatsTab } from '@/components/admin'
 
-// API клиент
-const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'https://api.librarymomsclub.ru/api',
-})
-
-api.interceptors.request.use((config) => {
-  if (typeof window !== 'undefined') {
-    const token = localStorage.getItem('access_token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
-  }
-  return config
-})
-
-// Типы импортированы из @/lib/types
-
 export default function AdminPage() {
+  // === ДАННЫЕ ИЗ ХУКА ===
+  const {
+    stats, materials, loadingMaterials, categories,
+    recentActivity, adminHistory, loadingHistory,
+    pushSubscribers, usersStats, analytics, selectedUser, copiedUsername,
+    loadStats, loadMaterials, loadCategories, loadRecentActivity,
+    loadPushSubscribers, loadUsersStats, loadAnalytics, loadUserDetails, loadAdminHistory,
+    copyUsername, closeUserDetails, addActivity, addAdminAction, updateCategories, api,
+  } = useAdminData()
+
+  // === ЛОКАЛЬНОЕ СОСТОЯНИЕ СТРАНИЦЫ ===
   const [isAdmin, setIsAdmin] = useState(false)
   const [adminUser, setAdminUser] = useState<AdminUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'materials' | 'categories' | 'history' | 'stats' | 'users'>('stats')
-  
-  // Пользователи и Push
-  const [pushSubscribers, setPushSubscribers] = useState<number[]>([])
-  const [usersStats, setUsersStats] = useState<{
-    users: Array<{
-      id: number
-      telegram_id: number
-      first_name: string
-      username?: string
-      photo_url?: string
-      views_count: number
-      favorites_count: number
-      last_activity?: string
-      has_push: boolean
-    }>
-    total: number
-    with_push: number
-  } | null>(null)
-  const [copiedUsername, setCopiedUsername] = useState<string | null>(null)
   const [isMenuVisible, setIsMenuVisible] = useState(true)
   const [lastScrollY, setLastScrollY] = useState(0)
   
-  // Push рассылка
+  // Push рассылка (локальное состояние формы)
   const [showPushForm, setShowPushForm] = useState(false)
   const [pushForm, setPushForm] = useState({ title: '', body: '', url: '/library', targetUser: '' })
   const [pushSending, setPushSending] = useState(false)
   
-  // Аналитика
-  const [analytics, setAnalytics] = useState<{
-    views_by_day: { day: string; count: number }[]
-    top_materials: { id: number; title: string; views: number }[]
-    avg_duration_seconds: number
-  } | null>(null)
-  
-  // Модалка пользователя
-  const [selectedUser, setSelectedUser] = useState<{
-    user: { id: number; telegram_id: number; first_name: string; username?: string; photo_url?: string }
-    views: { title: string; viewed_at: string }[]
-    favorites: string[]
-    subscription_end?: string
-    has_push: boolean
-  } | null>(null)
-  
-  const [stats, setStats] = useState<Stats | null>(null)
-  const [materials, setMaterials] = useState<Material[]>([])
-  const [loadingMaterials, setLoadingMaterials] = useState(false)
-  const [categories, setCategories] = useState<Category[]>([])
-  const [recentActivity, setRecentActivity] = useState<Activity[]>([])
-  const [adminHistory, setAdminHistory] = useState<AdminAction[]>([])
-  const [loadingHistory, setLoadingHistory] = useState(false)
-  
-  // Callback для новой активности через WebSocket
-  const handleNewActivity = useCallback((activity: WsActivity) => {
-    setRecentActivity(prev => [activity as Activity, ...prev].slice(0, 20))
-  }, [])
-  
-  // Callback для действий админов через WebSocket
-  const handleAdminAction = useCallback((action: WsAdminAction) => {
-    setAdminHistory(prev => [action as AdminAction, ...prev].slice(0, 50))
-  }, [])
+  // WebSocket callbacks - используют функции из хука
+  const handleNewActivity = (activity: WsActivity) => addActivity(activity as Activity)
+  const handleAdminAction = (action: WsAdminAction) => addAdminAction(action as AdminAction)
   
   // WebSocket для отслеживания онлайн пользователей
   const { onlineUsers, isConnected, libraryCount, adminCount } = usePresence('admin', handleNewActivity, handleAdminAction)
@@ -203,96 +148,7 @@ export default function AdminPage() {
     return () => window.removeEventListener('scroll', handleScroll)
   }, [lastScrollY])
 
-  const loadStats = async () => {
-    try {
-      const response = await api.get('/admin/stats')
-      setStats(response.data)
-      // Загружаем ленту активности вместе со статистикой
-      loadRecentActivity()
-    } catch (error) {
-      console.error('Error loading stats:', error)
-      // Fallback
-      setStats({
-        materials: { total: 0, published: 0, drafts: 0 },
-        views_total: 0,
-        favorites_total: 0,
-        categories_total: categories.length
-      })
-    }
-  }
-  
-  const loadRecentActivity = async () => {
-    try {
-      const response = await api.get('/activity/recent?limit=15')
-      setRecentActivity(response.data)
-    } catch (error) {
-      console.error('Error loading activity:', error)
-    }
-  }
-
-  const loadMaterials = async () => {
-    setLoadingMaterials(true)
-    try {
-      const response = await api.get('/materials?include_drafts=true')
-      setMaterials(response.data.items || [])
-    } catch (error) {
-      console.error('Error loading materials:', error)
-      setMaterials([])
-    } finally {
-      setLoadingMaterials(false)
-    }
-  }
-
-  const loadCategories = async () => {
-    try {
-      const response = await api.get('/categories')
-      setCategories(response.data)
-    } catch (error) {
-      console.error('Error loading categories:', error)
-    }
-  }
-
-  const loadPushSubscribers = async () => {
-    try {
-      const response = await api.get('/push/subscribers')
-      setPushSubscribers(response.data.subscribers || [])
-    } catch (error) {
-      console.error('Error loading push subscribers:', error)
-    }
-  }
-
-  const loadUsersStats = async () => {
-    try {
-      const response = await api.get('/push/users-stats')
-      setUsersStats(response.data)
-    } catch (error) {
-      console.error('Error loading users stats:', error)
-    }
-  }
-
-  const copyUsername = (username: string) => {
-    navigator.clipboard.writeText(`@${username}`)
-    setCopiedUsername(username)
-    setTimeout(() => setCopiedUsername(null), 2000)
-  }
-
-  const loadAnalytics = async () => {
-    try {
-      const response = await api.get('/push/analytics')
-      setAnalytics(response.data)
-    } catch (error) {
-      console.error('Error loading analytics:', error)
-    }
-  }
-
-  const loadUserDetails = async (telegramId: number) => {
-    try {
-      const response = await api.get(`/push/user-details/${telegramId}`)
-      setSelectedUser(response.data)
-    } catch (error) {
-      console.error('Error loading user details:', error)
-    }
-  }
+  // Функции загрузки данных теперь в useAdminData хук
 
   const sendPush = async (toAll: boolean) => {
     if (!pushForm.title || !pushForm.body) return
@@ -321,18 +177,6 @@ export default function AdminPage() {
       alert(err.response?.data?.detail || 'Ошибка отправки')
     } finally {
       setPushSending(false)
-    }
-  }
-
-  const loadAdminHistory = async () => {
-    setLoadingHistory(true)
-    try {
-      const response = await api.get('/activity/admin-history?limit=50')
-      setAdminHistory(response.data)
-    } catch (error) {
-      console.error('Error loading admin history:', error)
-    } finally {
-      setLoadingHistory(false)
     }
   }
 
@@ -569,7 +413,7 @@ export default function AdminPage() {
     
     if (editingCategory) {
       // Обновляем
-      setCategories(categories.map(c => 
+      updateCategories(categories.map(c => 
         c.id === editingCategory.id 
           ? { ...c, ...categoryForm }
           : c
@@ -580,7 +424,7 @@ export default function AdminPage() {
         id: Math.max(...categories.map(c => c.id)) + 1,
         ...categoryForm
       }
-      setCategories([...categories, newCategory])
+      updateCategories([...categories, newCategory])
     }
     
     setShowCategoryForm(false)
@@ -591,7 +435,7 @@ export default function AdminPage() {
     const category = categories.find(c => c.id === id)
     if (confirm(`Удалить категорию "${category?.name}"?\n\nВнимание: все материалы этой категории станут без категории.`)) {
       // TODO: Удаление через API
-      setCategories(categories.filter(c => c.id !== id))
+      updateCategories(categories.filter(c => c.id !== id))
       alert('Категория удалена!')
     }
   }
@@ -889,7 +733,7 @@ export default function AdminPage() {
 
       {/* Модалка пользователя */}
       {selectedUser && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setSelectedUser(null)}>
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => closeUserDetails()}>
           <div 
             className="bg-white rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
@@ -969,7 +813,7 @@ export default function AdminPage() {
                 </a>
               )}
               <button
-                onClick={() => setSelectedUser(null)}
+                onClick={() => closeUserDetails()}
                 className="px-4 py-2 border border-[#E8D4BA] text-[#8B8279] rounded-xl"
               >
                 Закрыть

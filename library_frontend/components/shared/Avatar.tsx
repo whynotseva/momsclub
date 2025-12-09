@@ -30,13 +30,13 @@ export const Avatar = memo(function Avatar({
 }: AvatarProps) {
   const [imgError, setImgError] = useState(false)
   
-  // Получаем инициалы из имени
-  const initials = name
+  // Получаем инициалы из имени (защита от null/undefined)
+  const initials = (name || '?')
     .split(' ')
-    .map(word => word[0])
+    .map(word => word[0] || '')
     .join('')
     .toUpperCase()
-    .slice(0, 2)
+    .slice(0, 2) || '?'
 
   const sizeClass = sizeClasses[size]
   const baseClass = `rounded-full border-2 border-[#E8D4BA] object-cover ${onClick ? 'cursor-pointer hover:border-[#B08968]' : ''} transition-colors`

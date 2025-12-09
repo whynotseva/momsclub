@@ -361,11 +361,11 @@ export function StatsTab({
 
       {/* Лента активности */}
       {recentActivity.length > 0 && (
-        <div className="mt-6 bg-white/80 backdrop-blur-xl rounded-2xl p-5 border border-[#E8D4BA]/30">
+        <div className="mt-6 bg-white/80 backdrop-blur-xl rounded-2xl p-5 border border-[#E8D4BA]/30 overflow-hidden">
           <h3 className="font-semibold text-[#5D4E3A] mb-4 flex items-center gap-2">
             <span>📋</span> Последние действия
           </h3>
-          <div className="space-y-3 max-h-[400px] overflow-y-auto">
+          <div className="space-y-3 max-h-[400px] overflow-y-auto overflow-x-hidden">
             {recentActivity.map((activity, index) => (
               <div 
                 key={index}
@@ -375,8 +375,8 @@ export function StatsTab({
                 <Avatar src={activity.user.photo_url} name={activity.user.first_name} size="md" />
                 
                 {/* Контент */}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-[#5D4E3A]">
+                <div className="flex-1 min-w-0 overflow-hidden">
+                  <p className="text-sm text-[#5D4E3A] truncate">
                     <span className="font-medium">{activity.user.first_name}</span>
                     <span className="text-[#8B8279]">
                       {activity.type === 'view' && ' открыл(а) '}
@@ -384,7 +384,9 @@ export function StatsTab({
                       {activity.type === 'favorite_remove' && ' убрал(а) из избранного '}
                       {activity.type === 'favorite' && ' добавил(а) в избранное '}
                     </span>
-                    <span className="font-medium truncate">{activity.material.icon} {activity.material.title}</span>
+                  </p>
+                  <p className="text-sm text-[#5D4E3A] font-medium truncate">
+                    {activity.material.icon} {activity.material.title}
                   </p>
                   <p className="text-xs text-[#8B8279] mt-0.5">
                     {new Date(activity.created_at).toLocaleString('ru-RU', { 

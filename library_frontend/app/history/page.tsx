@@ -4,22 +4,9 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
-
-interface Material {
-  id: number
-  title: string
-  description?: string
-  external_url?: string
-  category_id: number
-  category?: { name: string; icon: string; slug: string }
-  format: string
-  cover_image?: string
-  cover_url?: string  // Оптимизированный URL обложки
-  views: number
-  created_at: string
-}
-
-const ADMIN_IDS = [534740911, 44054166]
+import { Material } from '@/lib/types'
+import { ADMIN_IDS } from '@/lib/constants'
+import { useScrollVisibility } from '@/hooks/useScrollVisibility'
 
 export default function HistoryPage() {
   const router = useRouter()
@@ -29,9 +16,7 @@ export default function HistoryPage() {
   const [user, setUser] = useState({ name: '', avatar: '' })
   const [isAdmin, setIsAdmin] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
-  const [showHeader, setShowHeader] = useState(true)
-  const [showMobileNav, setShowMobileNav] = useState(true)
-  const [lastScrollY, setLastScrollY] = useState(0)
+  const isVisible = useScrollVisibility()
 
   useEffect(() => {
     const loadData = async () => {
@@ -77,30 +62,6 @@ export default function HistoryPage() {
     loadData()
   }, [router])
 
-  // Отслеживание скролла для скрытия/показа меню
-  useEffect(() => {
-    const handleScroll = () => {
-      const currentScrollY = window.scrollY
-      const scrollDiff = currentScrollY - lastScrollY
-      
-      if (currentScrollY < 50) {
-        setShowHeader(true)
-        setShowMobileNav(true)
-      } else if (scrollDiff > 10) {
-        setShowHeader(false)
-        setShowMobileNav(false)
-      } else if (scrollDiff < -10) {
-        setShowHeader(true)
-        setShowMobileNav(true)
-      }
-      
-      setLastScrollY(currentScrollY)
-    }
-
-    window.addEventListener('scroll', handleScroll, { passive: true })
-    return () => window.removeEventListener('scroll', handleScroll)
-  }, [lastScrollY])
-
   const openMaterial = async (material: Material) => {
     try {
       await api.post(`/materials/${material.id}/view`)
@@ -140,7 +101,7 @@ export default function HistoryPage() {
       <div className="fixed -top-40 -right-40 w-[600px] h-[600px] bg-gradient-to-br from-[#E8D5C4]/30 via-[#D4C4B0]/15 to-transparent rounded-full blur-3xl pointer-events-none"></div>
       <div className="fixed -bottom-40 -left-40 w-[500px] h-[500px] bg-gradient-to-tr from-[#C9B89A]/15 to-transparent rounded-full blur-3xl pointer-events-none"></div>
 
-      <header className={`fixed top-0 left-0 right-0 z-50 border-b border-white/50 shadow-lg transition-transform duration-300 ease-in-out ${showHeader ? 'translate-y-0' : '-translate-y-full'}`} style={{ background: 'rgba(255,255,255,0.55)', backdropFilter: 'blur(20px) saturate(180%)', paddingTop: 'env(safe-area-inset-top)' }}>
+      <header className={`fixed top-0 left-0 right-0 z-50 border-b border-white/50 shadow-lg transition-transform duration-300 ease-in-out ${isVisible ? 'translate-y-0' : '-translate-y-full'}`} style={{ background: 'rgba(255,255,255,0.55)', backdropFilter: 'blur(20px) saturate(180%)', paddingTop: 'env(safe-area-inset-top)' }}>
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <a href="/library" className="flex items-center space-x-3 group">
@@ -218,7 +179,7 @@ export default function HistoryPage() {
         )}
       </main>
 
-      <nav className={`md:hidden fixed bottom-6 left-4 right-4 z-50 transition-all duration-300 ease-in-out ${showMobileNav ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0'}`}>
+      <nav className={`md:hidden fixed bottom-6 left-4 right-4 z-50 transition-all duration-300 ease-in-out ${isVisible ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0'}`}>
         <div className="flex items-center justify-around rounded-2xl px-2 py-3 shadow-2xl border border-white/50" style={{ background: 'rgba(255,255,255,0.45)', backdropFilter: 'blur(24px) saturate(180%)' }}>
           <a href="/library" className="px-4 py-2 rounded-xl text-[#8B8279] text-sm font-medium">Библиотека</a>
           <a href="/favorites" className="px-4 py-2 rounded-xl text-[#8B8279] text-sm font-medium">Избранное</a>

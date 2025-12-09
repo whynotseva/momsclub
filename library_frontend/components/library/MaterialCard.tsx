@@ -1,6 +1,7 @@
 'use client'
 
 import { memo } from 'react'
+import { Badge } from '@/components/shared'
 
 // Локальный тип для материала (совместим с разными источниками)
 interface MaterialData {
@@ -57,12 +58,10 @@ export const MaterialCard = memo(function MaterialCard({
       {/* Бейджи */}
       <div className="absolute top-3 right-3 flex gap-1.5 z-10">
         {material.is_featured && (
-          <div className="bg-gradient-to-r from-amber-400 to-amber-500 text-white text-xs font-bold px-2 py-1 rounded-lg shadow-md">
-            ⭐ Выбор Полины
-          </div>
+          <Badge variant="featured">⭐ Выбор Полины</Badge>
         )}
         {isNew && (
-          <div className="bg-green-500 text-white text-xs font-bold px-2 py-1 rounded-lg">NEW</div>
+          <Badge variant="new">NEW</Badge>
         )}
       </div>
 

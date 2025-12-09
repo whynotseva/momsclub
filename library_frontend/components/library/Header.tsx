@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { Avatar } from '@/components/shared'
 
 interface Notification {
   id: number
@@ -186,10 +187,10 @@ export function Header({
                 onClick={onToggleProfileMenu}
                 className="flex items-center space-x-2"
               >
-                <img 
-                  src={user.avatar || ''} 
-                  alt={user.name}
-                  className="w-9 h-9 rounded-full border-2 border-[#E8D4BA] object-cover cursor-pointer hover:border-[#B08968] transition-colors"
+                <Avatar 
+                  src={user.avatar} 
+                  name={user.name}
+                  size="md"
                 />
                 <span className="text-[#8B8279] text-sm font-medium hidden md:block">
                   Выйти

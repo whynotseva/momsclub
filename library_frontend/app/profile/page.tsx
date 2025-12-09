@@ -132,7 +132,7 @@ export default function ProfilePage() {
             ) : (
               <div className="space-y-4">
                 <p className="text-sm text-[#5D4E3A]">
-                  Для доступа к библиотеке материалов оформите подписку Mom's Club.
+                  Для доступа к библиотеке материалов оформите подписку MomsClub.
                 </p>
                 <button className="w-full py-3 bg-gradient-to-r from-[#B08968] via-[#A67C52] to-[#96704A] text-white font-semibold rounded-xl shadow-lg shadow-[#B08968]/25 hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300">
                   Оформить подписку

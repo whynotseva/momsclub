@@ -78,6 +78,9 @@ export function usePresence(
     // Не подключаемся если page === null (нет подписки)
     if (!page) return
     
+    // Не подключаемся если мы на странице /profile (нет смысла)
+    if (typeof window !== 'undefined' && window.location.pathname === '/profile') return
+    
     const token = localStorage.getItem('access_token')
     if (!token) return
 

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class TelegramAuthData(BaseModel):
     """Данные от Telegram Login Widget"""
     id: int
-    first_name: str
+    first_name: Optional[str] = None
     last_name: Optional[str] = None
     username: Optional[str] = None
     photo_url: Optional[str] = None
@@ -20,7 +20,7 @@ class TelegramAuthData(BaseModel):
 class UserInfo(BaseModel):
     """Информация о пользователе"""
     telegram_id: int
-    first_name: str
+    first_name: Optional[str] = None
     username: Optional[str] = None
     photo_url: Optional[str] = None
     loyalty_level: str = "none"

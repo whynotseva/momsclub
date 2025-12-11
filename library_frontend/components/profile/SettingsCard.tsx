@@ -22,6 +22,18 @@ export function SettingsCard() {
   const [cancelling, setCancelling] = useState(false)
   const [enabling, setEnabling] = useState(false)
 
+  // Блокировка скролла при открытии модалки
+  useEffect(() => {
+    if (showCancelModal) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = ''
+    }
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [showCancelModal])
+
   useEffect(() => {
     const loadSettings = async () => {
       try {

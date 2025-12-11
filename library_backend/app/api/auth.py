@@ -464,27 +464,29 @@ def get_payment_history(
     """
     payments_result = db.execute(
         text("""
-            SELECT id, amount, status, payment_method, details, days, created_at
-            FROM payment_logs 
-            WHERE user_id = :user_id
-              AND status = 'success'
+            SELECT p.id, p.amount, p.status, p.payment_method, p.details, p.days, p.created_at,
+                   u.first_name as admin_first_name, u.username as admin_username
+            FROM payment_logs p
+            LEFT JOIN users u ON p.admin_id = u.id
+            WHERE p.user_id = :user_id
+              AND p.status = 'success'
               AND (
-                  is_confirmed = 1 
-                  OR payment_method = 'admin' 
-                  OR payment_method = 'referral_balance'
+                  p.is_confirmed = 1 
+                  OR p.payment_method = 'admin' 
+                  OR p.payment_method = 'referral_balance'
               )
               AND (
-                  details IS NULL 
+                  p.details IS NULL 
                   OR (
-                      details NOT LIKE '%ТЕСТ%' 
-                      AND details NOT LIKE '%Тест%' 
-                      AND details NOT LIKE '%тест%'
-                      AND details NOT LIKE '%TEST%'
-                      AND details NOT LIKE '%Test%'
-                      AND details NOT LIKE '%test%'
+                      p.details NOT LIKE '%ТЕСТ%' 
+                      AND p.details NOT LIKE '%Тест%' 
+                      AND p.details NOT LIKE '%тест%'
+                      AND p.details NOT LIKE '%TEST%'
+                      AND p.details NOT LIKE '%Test%'
+                      AND p.details NOT LIKE '%test%'
                   )
               )
-            ORDER BY created_at DESC
+            ORDER BY p.created_at DESC
             LIMIT 20
         """),
         {"user_id": current_user["user_id"]}
@@ -494,13 +496,18 @@ def get_payment_history(
     total_paid = 0
     
     for row in payments_result:
-        pid, amount, status, method, details, days, created_at = row
+        pid, amount, status, method, details, days, created_at, admin_first_name, admin_username = row
         
         # Форматируем дату
         if isinstance(created_at, str):
             date_str = created_at[:19]
         else:
             date_str = created_at.strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
+        
+        # Формируем имя админа
+        admin_name = None
+        if method == 'admin' and (admin_first_name or admin_username):
+            admin_name = admin_first_name or f"@{admin_username}"
         
         payments.append(PaymentItem(
             id=pid,
@@ -509,7 +516,8 @@ def get_payment_history(
             payment_method=method,
             details=details,
             days=days,
-            created_at=date_str
+            created_at=date_str,
+            admin_name=admin_name
         ))
         
         if status == "success":

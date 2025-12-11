@@ -1108,7 +1108,8 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                     payment_method="admin",
                     transaction_id=None,
                     details=details,
-                    admin_id=admin_db_id,  # Логируем кто выдал
+                    admin_id=admin_db_id,
+                    days=days if days else None,
                 )
 
                 days_text = "бессрочно" if is_lifetime else f"до {new_sub_end_date.strftime('%d.%m.%Y')}"
@@ -1145,7 +1146,8 @@ async def grant_subscription(message, telegram_id, days, is_lifetime=False, end_
                     payment_method="admin",
                     transaction_id=None,
                     details=details,
-                    admin_id=admin_db_id,  # Логируем кто выдал
+                    admin_id=admin_db_id,
+                    days=days if days else None,
                 )
 
                 days_text = "бессрочно" if is_lifetime else f"до {new_sub_end_date.strftime('%d.%m.%Y')}"

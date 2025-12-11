@@ -81,6 +81,7 @@ class PaymentItem(BaseModel):
     details: Optional[str] = None
     days: Optional[int] = None
     created_at: str
+    admin_name: Optional[str] = None  # Имя админа если подарок
 
 
 class PaymentHistory(BaseModel):

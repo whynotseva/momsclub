@@ -11,6 +11,7 @@ interface PaymentItem {
   details?: string
   days?: number
   created_at: string
+  admin_name?: string
 }
 
 interface PaymentHistory {
@@ -74,13 +75,35 @@ export function PaymentHistoryCard() {
   const getMethodIcon = (method?: string) => {
     switch (method) {
       case 'yookassa':
+      case 'youkassa':
+      case 'prodamus':
         return '💳'
+      case 'youkassa_autopay':
+        return '🔄'
       case 'admin':
-        return '👤'
-      case 'referral_balance':
         return '🎁'
-      default:
+      case 'referral_balance':
         return '💰'
+      default:
+        return '💳'
+    }
+  }
+
+  const getMethodLabel = (payment: PaymentItem) => {
+    switch (payment.payment_method) {
+      case 'yookassa':
+      case 'youkassa':
+        return 'ЮKassa'
+      case 'prodamus':
+        return 'Prodamus'
+      case 'youkassa_autopay':
+        return 'Автопродление'
+      case 'admin':
+        return payment.admin_name ? `Подарок от ${payment.admin_name}` : 'Подарок от админа'
+      case 'referral_balance':
+        return 'Оплата балансом'
+      default:
+        return payment.payment_method || 'Оплата'
     }
   }
 
@@ -165,6 +188,7 @@ export function PaymentHistoryCard() {
                 <p className="text-xs text-[#8B8279]">
                   {formatDate(payment.created_at)}
                   {payment.days && ` • ${payment.days} дней`}
+                  {` • ${getMethodLabel(payment)}`}
                 </p>
               </div>
             </div>

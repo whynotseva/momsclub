@@ -3411,7 +3411,9 @@ async def process_payment_history(callback: types.CallbackQuery):
                     'yookassa': '💳 ЮKassa',
                     'prodamus': '💳 Prodamus',
                     'youkassa_autopay': '🔄 Автопродление',
-                    'youkassa': '💳 ЮKassa'
+                    'youkassa': '💳 ЮKassa',
+                    'admin': '🎁 Подарок от админа',
+                    'referral_balance': '💰 Оплата балансом'
                 }
                 method = method_map.get(payment.payment_method, payment.payment_method or "💳 Не указан")
                 

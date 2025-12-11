@@ -17,15 +17,20 @@ interface ReferralInfo {
 export function ReferralCard() {
   const [referral, setReferral] = useState<ReferralInfo | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     const loadReferral = async () => {
       try {
+        console.log('[ReferralCard] Loading referral data...')
         const response = await api.get('/auth/referral')
+        console.log('[ReferralCard] Data loaded:', response.data)
         setReferral(response.data)
-      } catch (error) {
-        console.error('Error loading referral:', error)
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+        console.error('[ReferralCard] Error loading referral:', err)
+        setError(errorMessage)
       } finally {
         setLoading(false)
       }
@@ -62,6 +67,18 @@ export function ReferralCard() {
             <div className="h-16 bg-[#E8D4BA]/30 rounded-xl" />
           </div>
         </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg shadow-[#C9A882]/10 border border-[#E8D4BA]/40 p-6">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="text-xl">👥</span>
+          <h2 className="text-lg font-semibold text-[#2D2A26]">Реферальная программа</h2>
+        </div>
+        <p className="text-sm text-[#8B8279]">Не удалось загрузить данные</p>
       </div>
     )
   }

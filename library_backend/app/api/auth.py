@@ -570,6 +570,10 @@ class UpdateSettingsRequest(BaseModel):
     birthday: Optional[str] = None  # Формат YYYY-MM-DD
 
 
+class CancelAutorenewalRequest(BaseModel):
+    reason: str  # Причина отмены
+
+
 @router.put("/settings", response_model=UserSettings)
 def update_user_settings(
     request: UpdateSettingsRequest,
@@ -609,3 +613,80 @@ def update_user_settings(
         birthday=birthday_str,
         is_recurring_active=bool(is_recurring)
     )
+
+
+@router.post("/cancel-autorenewal")
+def request_cancel_autorenewal(
+    request: CancelAutorenewalRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Создать заявку на отмену автопродления"""
+    import os
+    import requests as http_requests
+    
+    user_id = current_user["user_id"]
+    telegram_id = current_user["telegram_id"]
+    
+    # Проверяем что автопродление включено
+    user_result = db.execute(
+        text("SELECT is_recurring_active, first_name, username FROM users WHERE id = :user_id"),
+        {"user_id": user_id}
+    ).fetchone()
+    
+    if not user_result:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    is_recurring, first_name, username = user_result
+    
+    if not is_recurring:
+        raise HTTPException(status_code=400, detail="Автопродление уже отключено")
+    
+    # Создаём заявку в БД
+    db.execute(
+        text("""
+            INSERT INTO autorenewal_cancellation_requests (user_id, status, reason, created_at)
+            VALUES (:user_id, 'pending', :reason, datetime('now'))
+        """),
+        {"user_id": user_id, "reason": request.reason}
+    )
+    db.commit()
+    
+    # Получаем ID созданной заявки
+    request_id_result = db.execute(
+        text("SELECT last_insert_rowid()")
+    ).fetchone()
+    request_id = request_id_result[0] if request_id_result else 0
+    
+    # Отправляем уведомление админам через Telegram Bot API
+    bot_token = os.getenv("BOT_TOKEN")
+    admin_ids = [44054166, 5610859303]  # ID админов
+    
+    if bot_token:
+        user_info = f"{first_name or 'Пользователь'} (@{username})" if username else f"{first_name or 'Пользователь'} (ID: {telegram_id})"
+        
+        message = (
+            f"🚫 <b>Заявка на отмену автопродления</b>\n"
+            f"📱 <i>С сайта</i>\n\n"
+            f"👤 {user_info}\n"
+            f"🆔 Telegram ID: <code>{telegram_id}</code>\n"
+            f"📝 Причина: {request.reason}\n"
+            f"🆔 ID заявки: <code>{request_id}</code>\n\n"
+            f"⏳ Требуется обработать в боте"
+        )
+        
+        for admin_id in admin_ids:
+            try:
+                http_requests.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={
+                        "chat_id": admin_id,
+                        "text": message,
+                        "parse_mode": "HTML"
+                    },
+                    timeout=5
+                )
+            except:
+                pass
+    
+    return {"success": True, "message": "Заявка создана", "request_id": request_id}

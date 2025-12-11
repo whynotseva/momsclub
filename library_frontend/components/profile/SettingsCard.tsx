@@ -15,6 +15,9 @@ export function SettingsCard() {
   const [isEditing, setIsEditing] = useState(false)
   const [birthdayInput, setBirthdayInput] = useState('')
   const [saving, setSaving] = useState(false)
+  const [showCancelModal, setShowCancelModal] = useState(false)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelling, setCancelling] = useState(false)
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -46,6 +49,33 @@ export function SettingsCard() {
       alert('Ошибка сохранения')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const cancelReasons = [
+    { id: 'expensive', label: '💸 Дорого' },
+    { id: 'no_use', label: '📉 Не использую контент' },
+    { id: 'pause', label: '⏸ Временная пауза' },
+    { id: 'expectations', label: '😞 Не оправдал ожидания' },
+    { id: 'technical', label: '🔄 Технические проблемы' },
+  ]
+
+  const submitCancelRequest = async () => {
+    if (!cancelReason) {
+      alert('Выберите причину')
+      return
+    }
+    setCancelling(true)
+    try {
+      await api.post('/auth/cancel-autorenewal', { reason: cancelReason })
+      alert('✅ Заявка на отмену автопродления создана! Админ рассмотрит её в ближайшее время.')
+      setShowCancelModal(false)
+      setCancelReason('')
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { detail?: string } } }
+      alert(error.response?.data?.detail || 'Ошибка создания заявки')
+    } finally {
+      setCancelling(false)
     }
   }
 
@@ -163,32 +193,83 @@ export function SettingsCard() {
         </div>
 
         {/* Auto-renewal */}
-        <div className="flex items-center justify-between p-3 bg-[#FAF6F1] rounded-xl">
-          <div className="flex items-center gap-3">
-            <span className="text-xl">🔄</span>
-            <div>
-              <p className="font-medium text-[#2D2A26]">Автопродление</p>
-              <p className="text-xs text-[#8B8279]">
-                {settings?.is_recurring_active 
-                  ? 'Подписка продлится автоматически'
-                  : 'Выключено'}
-              </p>
+        <div className="p-3 bg-[#FAF6F1] rounded-xl">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-xl">🔄</span>
+              <div>
+                <p className="font-medium text-[#2D2A26]">Автопродление</p>
+                <p className="text-xs text-[#8B8279]">
+                  {settings?.is_recurring_active 
+                    ? 'Подписка продлится автоматически'
+                    : 'Выключено'}
+                </p>
+              </div>
             </div>
+            {settings?.is_recurring_active ? (
+              <button
+                onClick={() => setShowCancelModal(true)}
+                className="px-3 py-1 text-xs text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors"
+              >
+                Отключить
+              </button>
+            ) : (
+              <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600">
+                Выкл
+              </span>
+            )}
           </div>
-          <span className={`px-2 py-0.5 text-xs rounded-full ${
-            settings?.is_recurring_active 
-              ? 'bg-green-100 text-green-700' 
-              : 'bg-gray-100 text-gray-600'
-          }`}>
-            {settings?.is_recurring_active ? 'Вкл' : 'Выкл'}
-          </span>
         </div>
       </div>
 
-      {/* Info */}
-      <p className="mt-4 text-xs text-[#8B8279] text-center">
-        Автопродление управляется через бота
-      </p>
+      {/* Cancel Modal */}
+      {showCancelModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-semibold text-[#2D2A26] mb-2">
+              Отключить автопродление?
+            </h3>
+            <p className="text-sm text-[#8B8279] mb-4">
+              Выберите причину, это поможет нам стать лучше
+            </p>
+            
+            <div className="space-y-2 mb-4">
+              {cancelReasons.map((reason) => (
+                <button
+                  key={reason.id}
+                  onClick={() => setCancelReason(reason.label)}
+                  className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${
+                    cancelReason === reason.label
+                      ? 'border-[#B08968] bg-[#FAF6F1]'
+                      : 'border-[#E8D4BA] hover:bg-[#FAF6F1]'
+                  }`}
+                >
+                  {reason.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={submitCancelRequest}
+                disabled={cancelling || !cancelReason}
+                className="flex-1 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50"
+              >
+                {cancelling ? 'Отправка...' : 'Отправить заявку'}
+              </button>
+              <button
+                onClick={() => {
+                  setShowCancelModal(false)
+                  setCancelReason('')
+                }}
+                className="px-4 py-2 border border-[#E8D4BA] text-[#8B8279] rounded-lg hover:bg-[#FAF6F1] transition-colors"
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

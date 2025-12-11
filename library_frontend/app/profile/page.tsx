@@ -2,11 +2,13 @@
 
 import { useAuthContext } from '@/contexts/AuthContext'
 import { LoadingSpinner } from '@/components/shared'
-import { LoyaltyCard, ReferralCard, PaymentHistoryCard, SettingsCard } from '@/components/profile'
+import { LoyaltyCard, ReferralCard, PaymentHistoryCard, SettingsCard, PaymentModal } from '@/components/profile'
+import { useState } from 'react'
 import Link from 'next/link'
 
 export default function ProfilePage() {
   const { user, loading, hasSubscription, logout } = useAuthContext()
+  const [showPaymentModal, setShowPaymentModal] = useState(false)
 
   if (loading) {
     return (
@@ -127,7 +129,10 @@ export default function ProfilePage() {
                 <p className="text-sm text-[#5D4E3A]">
                   Вы можете продлить подписку заранее — дни добавятся к текущему сроку.
                 </p>
-                <button className="w-full py-3 bg-gradient-to-r from-[#B08968] via-[#A67C52] to-[#96704A] text-white font-semibold rounded-xl shadow-lg shadow-[#B08968]/25 hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300">
+                <button 
+                  onClick={() => setShowPaymentModal(true)}
+                  className="w-full py-3 bg-gradient-to-r from-[#B08968] via-[#A67C52] to-[#96704A] text-white font-semibold rounded-xl shadow-lg shadow-[#B08968]/25 hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300"
+                >
                   Продлить подписку
                 </button>
               </div>
@@ -136,7 +141,10 @@ export default function ProfilePage() {
                 <p className="text-sm text-[#5D4E3A]">
                   Для доступа к библиотеке материалов оформите подписку MomsClub.
                 </p>
-                <button className="w-full py-3 bg-gradient-to-r from-[#B08968] via-[#A67C52] to-[#96704A] text-white font-semibold rounded-xl shadow-lg shadow-[#B08968]/25 hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300">
+                <button 
+                  onClick={() => setShowPaymentModal(true)}
+                  className="w-full py-3 bg-gradient-to-r from-[#B08968] via-[#A67C52] to-[#96704A] text-white font-semibold rounded-xl shadow-lg shadow-[#B08968]/25 hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300"
+                >
                   Оформить подписку
                 </button>
                 <p className="text-xs text-center text-[#8B8279]">
@@ -217,6 +225,14 @@ export default function ProfilePage() {
           </p>
         </div>
       </main>
+
+      {/* Payment Modal */}
+      <PaymentModal
+        isOpen={showPaymentModal}
+        onClose={() => setShowPaymentModal(false)}
+        isFirstPayment={!user?.subscriptionDaysLeft}
+        hasSubscription={hasSubscription}
+      />
     </div>
   )
 }

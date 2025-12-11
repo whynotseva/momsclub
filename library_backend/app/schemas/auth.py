@@ -97,3 +97,16 @@ class UserSettings(BaseModel):
     is_recurring_active: bool = False  # Автопродление включено
     has_saved_card: bool = False  # Есть ли сохранённая карта для автопродления
     autopay_streak: int = 0  # Стрик автопродлений подряд
+
+
+class CreatePaymentRequest(BaseModel):
+    """Запрос на создание платежа"""
+    tariff: str  # "1month", "2months", "3months"
+
+
+class CreatePaymentResponse(BaseModel):
+    """Ответ с URL для оплаты"""
+    payment_url: str
+    payment_id: str
+    amount: int
+    days: int

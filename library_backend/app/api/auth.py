@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from app.database import get_db
 from app.config import settings
-from app.schemas import TelegramAuthData, TokenResponse, UserInfo, SubscriptionStatus, LoyaltyInfo, ReferralInfo, PaymentItem, PaymentHistory, UserSettings
+from app.schemas import TelegramAuthData, TokenResponse, UserInfo, SubscriptionStatus, LoyaltyInfo, ReferralInfo, PaymentItem, PaymentHistory, UserSettings, CreatePaymentRequest, CreatePaymentResponse
 from app.utils.auth import verify_telegram_auth, create_access_token
 from app.api.dependencies import get_current_user, get_current_user_with_subscription
 
@@ -746,3 +746,188 @@ def enable_autorenewal(
     db.commit()
     
     return {"success": True, "message": "Автопродление включено"}
+
+
+# ==================== СОЗДАНИЕ ПЛАТЕЖА ====================
+
+# Тарифы подписки
+TARIFFS = {
+    "1month": {"price": 990, "price_first": 690, "days": 30},
+    "2months": {"price": 1790, "price_first": 1790, "days": 60},
+    "3months": {"price": 2490, "price_first": 2490, "days": 90},
+}
+
+
+@router.post("/create-payment", response_model=CreatePaymentResponse)
+def create_payment(
+    request: CreatePaymentRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Создаёт платёж в ЮКассе и возвращает URL для оплаты.
+    Логика синхронизирована с ботом.
+    """
+    import sys
+    import os
+    import uuid
+    import time
+    import random
+    
+    # Добавляем путь к основному проекту для импорта
+    momsclub_path = "/root/home/momsclub"
+    if momsclub_path not in sys.path:
+        sys.path.insert(0, momsclub_path)
+    
+    user_id = current_user["user_id"]
+    
+    # Проверяем тариф
+    if request.tariff not in TARIFFS:
+        raise HTTPException(status_code=400, detail=f"Неверный тариф. Доступные: {list(TARIFFS.keys())}")
+    
+    tariff = TARIFFS[request.tariff]
+    
+    # Получаем данные пользователя
+    user_data = db.execute(
+        text("""
+            SELECT telegram_id, first_name, username, phone, is_first_payment_done,
+                   one_time_discount_percent, lifetime_discount_percent, current_loyalty_level
+            FROM users WHERE id = :user_id
+        """),
+        {"user_id": user_id}
+    ).fetchone()
+    
+    if not user_data:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    telegram_id, first_name, username, phone, is_first_payment_done, \
+        one_time_discount, lifetime_discount, loyalty_level = user_data
+    
+    # Определяем базовую цену
+    # Первая оплата со скидкой только для 1 месяца
+    if not is_first_payment_done and request.tariff == "1month":
+        base_price = tariff["price_first"]  # 690₽
+    else:
+        base_price = tariff["price"]
+    
+    days = tariff["days"]
+    
+    # Применяем скидку лояльности (только если это не первая оплата со скидкой)
+    discount_percent = 0
+    if base_price != tariff.get("price_first") or is_first_payment_done:
+        # Берём максимальную скидку из разовой и постоянной
+        discount_percent = max(one_time_discount or 0, lifetime_discount or 0)
+    
+    # Рассчитываем финальную цену
+    if discount_percent > 0:
+        final_price = int(base_price * (100 - discount_percent) / 100)
+    else:
+        final_price = base_price
+    
+    # Создаём платёж через YooKassa SDK
+    try:
+        from yookassa import Configuration, Payment
+        
+        # Настраиваем ЮКассу
+        yookassa_shop_id = os.getenv("YOOKASSA_SHOP_ID")
+        yookassa_secret = os.getenv("YOOKASSA_SECRET_KEY")
+        
+        if not yookassa_shop_id or not yookassa_secret:
+            raise HTTPException(status_code=500, detail="Платёжная система не настроена")
+        
+        Configuration.configure(yookassa_shop_id, yookassa_secret)
+        
+        # Генерируем уникальный ID
+        payment_uuid = str(uuid.uuid4())
+        timestamp = int(time.time())
+        random_suffix = random.randint(1000, 9999)
+        sub_type = f"momclub_subscription_{request.tariff}"
+        payment_label = f"user_{telegram_id}_{sub_type}_{timestamp}_{random_suffix}"
+        
+        # Описание платежа
+        description = f"Подписка на Mom's Club на {days} дней (username: @{username or 'Unknown'})"
+        if discount_percent > 0:
+            description += f" | Скидка: {discount_percent}%"
+        
+        # URL возврата
+        return_url = os.getenv("PAYMENT_RETURN_URL", "https://momsclub.online/profile")
+        
+        # Метаданные
+        metadata = {
+            "telegram_id": str(telegram_id),
+            "sub_type": sub_type,
+            "payment_label": payment_label,
+            "days": str(days),
+            "source": "website"
+        }
+        
+        if discount_percent > 0:
+            metadata["loyalty_discount_percent"] = str(discount_percent)
+        
+        # Чек
+        receipt_data = {
+            "customer": {
+                "phone": phone if phone else "+79999999999",
+                "email": f"user_{telegram_id}@momsclub.ru"
+            },
+            "items": [{
+                "description": description[:128],
+                "quantity": "1",
+                "amount": {
+                    "value": f"{final_price}.00",
+                    "currency": "RUB"
+                },
+                "vat_code": 1
+            }]
+        }
+        
+        # Создаём платёж
+        payment = Payment.create({
+            "amount": {
+                "value": f"{final_price}.00",
+                "currency": "RUB"
+            },
+            "confirmation": {
+                "type": "redirect",
+                "return_url": return_url
+            },
+            "capture": True,
+            "save_payment_method": True,
+            "description": description,
+            "metadata": metadata,
+            "receipt": receipt_data
+        }, payment_uuid)
+        
+        payment_url = payment.confirmation.confirmation_url
+        yookassa_payment_id = payment.id
+        
+        # Создаём запись в payment_logs (как в боте)
+        db.execute(
+            text("""
+                INSERT INTO payment_logs (user_id, amount, status, payment_method, transaction_id, details, payment_label, days, created_at)
+                VALUES (:user_id, :amount, 'pending', 'yookassa', :transaction_id, :details, :payment_label, :days, datetime('now'))
+            """),
+            {
+                "user_id": user_id,
+                "amount": final_price,
+                "transaction_id": yookassa_payment_id,
+                "details": description,
+                "payment_label": payment_label,
+                "days": days
+            }
+        )
+        db.commit()
+        
+        return CreatePaymentResponse(
+            payment_url=payment_url,
+            payment_id=yookassa_payment_id,
+            amount=final_price,
+            days=days
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.error(f"Ошибка создания платежа: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка создания платежа: {str(e)}")

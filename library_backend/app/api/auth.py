@@ -660,7 +660,7 @@ def request_cancel_autorenewal(
     request_id = request_id_result[0] if request_id_result else 0
     
     # Отправляем уведомление админам через Telegram Bot API
-    bot_token = os.getenv("BOT_TOKEN")
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     admin_ids = [44054166, 5610859303]  # ID админов
     
     if bot_token:

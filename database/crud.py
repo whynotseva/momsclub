@@ -1011,27 +1011,38 @@ async def get_user_payment_history(db: AsyncSession, user_id: int, limit: int = 
     Returns:
         Список записей PaymentLog
     """
-    # Фильтруем только успешные и подтвержденные платежи (реальные платежи)
+    # Фильтруем успешные платежи:
+    # 1. Подтверждённые реальные платежи (is_confirmed = True)
+    # 2. ИЛИ админские выдачи (payment_method = 'admin')
+    # 3. ИЛИ оплата балансом (payment_method = 'referral_balance')
+    # Исключаем тестовые платежи
     if only_confirmed:
+        # Условие для исключения тестовых платежей
+        not_test_condition = or_(
+            PaymentLog.details.is_(None),
+            and_(
+                PaymentLog.details.notlike('%ТЕСТ%'),
+                PaymentLog.details.notlike('%Тест%'),
+                PaymentLog.details.notlike('%тест%'),
+                PaymentLog.details.notlike('%ТЕСТОВЫЙ%'),
+                PaymentLog.details.notlike('%Тестовый%'),
+                PaymentLog.details.notlike('%тестовый%'),
+                PaymentLog.details.notlike('%TEST%'),
+                PaymentLog.details.notlike('%Test%'),
+                PaymentLog.details.notlike('%test%')
+            )
+        )
+        
         query = select(PaymentLog).where(
             and_(
                 PaymentLog.user_id == user_id,
                 PaymentLog.status == 'success',
-                PaymentLog.is_confirmed == True,
-                # Исключаем тестовые платежи (где в details есть "ТЕСТ", "Тест", "ТЕСТОВЫЙ", "Тестовый" и т.д.)
+                not_test_condition,
+                # Подтверждённые ИЛИ админские ИЛИ оплата балансом
                 or_(
-                    PaymentLog.details.is_(None),
-                    and_(
-                        PaymentLog.details.notlike('%ТЕСТ%'),
-                        PaymentLog.details.notlike('%Тест%'),
-                        PaymentLog.details.notlike('%тест%'),
-                        PaymentLog.details.notlike('%ТЕСТОВЫЙ%'),
-                        PaymentLog.details.notlike('%Тестовый%'),
-                        PaymentLog.details.notlike('%тестовый%'),
-                        PaymentLog.details.notlike('%TEST%'),
-                        PaymentLog.details.notlike('%Test%'),
-                        PaymentLog.details.notlike('%test%')
-                    )
+                    PaymentLog.is_confirmed == True,
+                    PaymentLog.payment_method == 'admin',
+                    PaymentLog.payment_method == 'referral_balance'
                 )
             )
         )

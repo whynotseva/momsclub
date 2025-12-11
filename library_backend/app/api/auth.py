@@ -454,13 +454,36 @@ def get_payment_history(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Получить историю платежей пользователя"""
-    # Получаем платежи
+    """Получить историю платежей пользователя
+    
+    Показываем:
+    - Подтверждённые успешные платежи (is_confirmed = 1)
+    - ИЛИ админские выдачи (payment_method = 'admin')
+    - ИЛИ оплата балансом (payment_method = 'referral_balance')
+    Исключаем тестовые платежи (содержащие 'ТЕСТ', 'тест', 'TEST' в details)
+    """
     payments_result = db.execute(
         text("""
             SELECT id, amount, status, payment_method, details, days, created_at
             FROM payment_logs 
             WHERE user_id = :user_id
+              AND status = 'success'
+              AND (
+                  is_confirmed = 1 
+                  OR payment_method = 'admin' 
+                  OR payment_method = 'referral_balance'
+              )
+              AND (
+                  details IS NULL 
+                  OR (
+                      details NOT LIKE '%ТЕСТ%' 
+                      AND details NOT LIKE '%Тест%' 
+                      AND details NOT LIKE '%тест%'
+                      AND details NOT LIKE '%TEST%'
+                      AND details NOT LIKE '%Test%'
+                      AND details NOT LIKE '%test%'
+                  )
+              )
             ORDER BY created_at DESC
             LIMIT 20
         """),

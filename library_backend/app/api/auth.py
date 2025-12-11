@@ -669,12 +669,21 @@ def request_cancel_autorenewal(
         message = (
             f"🚫 <b>Заявка на отмену автопродления</b>\n"
             f"📱 <i>С сайта</i>\n\n"
-            f"👤 {user_info}\n"
+            f"👤 Пользователь: {user_info}\n"
             f"🆔 Telegram ID: <code>{telegram_id}</code>\n"
             f"📝 Причина: {request.reason}\n"
             f"🆔 ID заявки: <code>{request_id}</code>\n\n"
-            f"⏳ Требуется обработать в боте"
+            f"⏳ Требуется обработать заявку"
         )
+        
+        # Inline кнопки как в боте
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "✅ Одобрить", "callback_data": f"approve_cancel_renewal_{request_id}"}],
+                [{"text": "❌ Отклонить", "callback_data": f"reject_cancel_renewal_{request_id}"}],
+                [{"text": "📋 Список заявок", "callback_data": "admin_pending_cancellations"}]
+            ]
+        }
         
         for admin_id in admin_ids:
             try:
@@ -683,7 +692,8 @@ def request_cancel_autorenewal(
                     json={
                         "chat_id": admin_id,
                         "text": message,
-                        "parse_mode": "HTML"
+                        "parse_mode": "HTML",
+                        "reply_markup": keyboard
                     },
                     timeout=5
                 )

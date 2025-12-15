@@ -367,8 +367,8 @@ def get_my_stats(
 
 # ============== ADMIN ENDPOINTS ==============
 
-def check_admin(current_user: dict):
-    """Проверка что пользователь админ"""
+def require_admin(current_user: dict):
+    """Проверка что пользователь админ (выбрасывает 403 если нет)"""
     if current_user["telegram_id"] not in ADMIN_IDS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -384,7 +384,7 @@ def create_material(
     db: Session = Depends(get_db)
 ):
     """Создать материал (только для админов)"""
-    check_admin(current_user)
+    require_admin(current_user)
     
     # Определяем category_ids (новый формат) или category_id (старый)
     category_ids = data.category_ids or []
@@ -437,7 +437,7 @@ def update_material(
     db: Session = Depends(get_db)
 ):
     """Обновить материал (только для админов)"""
-    check_admin(current_user)
+    require_admin(current_user)
     
     material = db.execute(
         select(LibraryMaterial)
@@ -506,7 +506,7 @@ def delete_material(
     db: Session = Depends(get_db)
 ):
     """Удалить материал (только для админов)"""
-    check_admin(current_user)
+    require_admin(current_user)
     
     material = db.execute(
         select(LibraryMaterial).where(LibraryMaterial.id == material_id)

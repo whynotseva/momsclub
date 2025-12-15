@@ -60,9 +60,17 @@ api.interceptors.response.use(
     
     // Не ретраим если уже ретраили или 401/403
     if (config?._retry || error.response?.status === 401 || error.response?.status === 403) {
-      if (error.response?.status === 401) {
+      // При 401 (не авторизован) или 403 (нет доступа) — очищаем данные и редиректим на логин
+      if (error.response?.status === 401 || error.response?.status === 403) {
+        console.log('🔐 Сессия истекла, перенаправляем на вход...');
         localStorage.removeItem('access_token');
-        window.location.href = '/login';
+        localStorage.removeItem('user');
+        // Очищаем кэш API
+        cache.clear();
+        // Редирект на логин (если ещё не там)
+        if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+          window.location.href = '/login';
+        }
       }
       return Promise.reject(error);
     }

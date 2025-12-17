@@ -15,6 +15,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import update, select
 from typing import Optional, Dict, Any
+from pydantic import BaseModel
 from dateutil import parser as date_parser
 try:
     import pytz
@@ -942,6 +943,42 @@ async def handle_payment_waiting(payment):
         # Пробрасываем исключение наверх
         raise
 
+
+# ============== API ДЛЯ УВЕДОМЛЕНИЙ ОТ САЙТА ==============
+
+NOTIFICATION_API_KEY = os.getenv("NOTIFICATION_API_KEY", "")
+
+class NotificationRequest(BaseModel):
+    telegram_id: int
+    message: str
+    api_key: str
+    notification_type: str = "general"
+
+
+@app.post("/api/send_notification")
+async def send_notification(request: NotificationRequest):
+    """
+    Отправляет уведомление пользователю в Telegram.
+    Используется сайтом для отправки пушей при действиях админа.
+    """
+    if not NOTIFICATION_API_KEY or request.api_key != NOTIFICATION_API_KEY:
+        webhook_logger.warning(f"Попытка отправки уведомления с неверным API ключом")
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    try:
+        await bot.send_message(
+            request.telegram_id,
+            request.message,
+            parse_mode="HTML"
+        )
+        webhook_logger.info(f"Уведомление отправлено: telegram_id={request.telegram_id}, type={request.notification_type}")
+        return {"success": True, "telegram_id": request.telegram_id}
+    except Exception as e:
+        webhook_logger.error(f"Ошибка отправки уведомления telegram_id={request.telegram_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============== HEALTH CHECK ==============
 
 @app.get("/")
 @app.get("/health")

@@ -12,6 +12,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from sqlalchemy import update
 from typing import Optional, Dict, Any
+from pydantic import BaseModel
 
 from database.config import AsyncSessionLocal
 from database.crud import (
@@ -725,6 +726,43 @@ async def send_referral_reward_choice(bot, referrer, referee, payment_amount, pa
     except Exception as e:
         webhook_logger.error(f"Ошибка при отправке уведомления о выборе награды: {e}", exc_info=True)
 
+
+# ============== API ДЛЯ УВЕДОМЛЕНИЙ ОТ САЙТА ==============
+
+NOTIFICATION_API_KEY = os.getenv("NOTIFICATION_API_KEY", "")
+
+class NotificationRequest(BaseModel):
+    telegram_id: int
+    message: str
+    api_key: str
+    notification_type: str = "general"
+
+
+@app.post("/api/send_notification")
+async def send_notification(request: NotificationRequest):
+    """
+    Отправляет уведомление пользователю в Telegram.
+    Используется сайтом для отправки пушей при действиях админа.
+    """
+    # Проверка API ключа
+    if not NOTIFICATION_API_KEY or request.api_key != NOTIFICATION_API_KEY:
+        webhook_logger.warning(f"Попытка отправки уведомления с неверным API ключом")
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    try:
+        await bot.send_message(
+            request.telegram_id,
+            request.message,
+            parse_mode="HTML"
+        )
+        webhook_logger.info(f"Уведомление отправлено: telegram_id={request.telegram_id}, type={request.notification_type}")
+        return {"success": True, "telegram_id": request.telegram_id}
+    except Exception as e:
+        webhook_logger.error(f"Ошибка отправки уведомления telegram_id={request.telegram_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============== HEALTH CHECK ==============
 
 @app.get("/")
 @app.get("/health")

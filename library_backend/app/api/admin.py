@@ -4,6 +4,7 @@ API endpoints для админ-панели библиотеки
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select, update, delete, func
 from typing import List, Optional
@@ -22,7 +23,7 @@ from app.schemas.library import (
     CategoryCreate, Category,
     TagCreate, Tag
 )
-from app.services import AdminService, is_admin, ADMIN_IDS
+from app.services import AdminService, is_admin, ADMIN_IDS, send_telegram_notification
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -417,3 +418,34 @@ def generate_slug(text: str) -> str:
     slug = re.sub(r'-+', '-', slug).strip('-')
     
     return slug
+
+
+# ==================== УВЕДОМЛЕНИЯ ====================
+
+class TestNotificationRequest(BaseModel):
+    telegram_id: int
+    message: str = "🧪 Тестовое уведомление от сайта!"
+
+
+@router.post("/test-notification")
+async def test_notification(
+    request: TestNotificationRequest,
+    admin: dict = Depends(require_admin)
+):
+    """
+    Тестовый endpoint для проверки отправки уведомлений.
+    Отправляет сообщение в Telegram через API бота.
+    """
+    success = await send_telegram_notification(
+        telegram_id=request.telegram_id,
+        message=request.message,
+        notification_type="test"
+    )
+    
+    if success:
+        return {"success": True, "message": "Уведомление отправлено"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Не удалось отправить уведомление"
+        )

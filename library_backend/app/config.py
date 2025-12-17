@@ -31,6 +31,10 @@ class Settings:
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_BOT_USERNAME: str = os.getenv("TELEGRAM_BOT_USERNAME", "momsclub_bot")
     
+    # Notification API (для отправки пушей через бота)
+    NOTIFICATION_API_KEY: str = os.getenv("NOTIFICATION_API_KEY", "")
+    NOTIFICATION_API_URL: str = os.getenv("NOTIFICATION_API_URL", "http://localhost:8000/api/send_notification")
+    
     # CORS
     ALLOWED_ORIGINS: list = os.getenv(
         "ALLOWED_ORIGINS",

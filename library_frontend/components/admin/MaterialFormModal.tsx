@@ -75,10 +75,10 @@ function CoverUpload({ formData, formErrors, isDragging, uploadingCover, onUpdat
         onDrop={handleDrop}
         className={`border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer ${
           isDragging 
-            ? 'border-[#B08968] bg-[#F5E6D3]/50 scale-[1.02]' 
+            ? 'border-[#B08968] bg-[#F5E6D3]/50 dark:bg-[#2A2A2A] scale-[1.02]' 
             : formErrors.cover_image
-              ? 'border-red-300 bg-red-50'
-              : 'border-[#E8D4BA] hover:border-[#B08968] hover:bg-[#F5E6D3]/20'
+              ? 'border-red-300 bg-red-50 dark:bg-red-900/20'
+              : 'border-[#E8D4BA] dark:border-[#3D3D3D] hover:border-[#B08968] hover:bg-[#F5E6D3]/20 dark:hover:bg-[#2A2A2A]'
         }`}
       >
         <input
@@ -178,7 +178,7 @@ function FormContent(props: FormContentProps) {
         <textarea
           value={formData.description}
           onChange={e => onUpdateFormData({ description: e.target.value })}
-          className="w-full px-4 py-3 border border-[#E8D4BA]/50 rounded-xl focus:ring-2 focus:ring-[#B08968]/30 focus:border-[#B08968] outline-none resize-none"
+          className="w-full px-4 py-3 border border-[#E8D4BA]/50 dark:border-[#3D3D3D] dark:bg-[#2A2A2A] dark:text-[#E5E5E5] rounded-xl focus:ring-2 focus:ring-[#B08968]/30 focus:border-[#B08968] outline-none resize-none"
           rows={2}
           placeholder="Краткое описание для карточки"
         />
@@ -186,8 +186,8 @@ function FormContent(props: FormContentProps) {
 
       {/* Категории */}
       <div>
-        <label className="block text-sm font-medium text-[#5D4E3A] mb-2">
-          Категории * <span className="text-xs text-[#8B8279] font-normal">(можно выбрать несколько)</span>
+        <label className="block text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5] mb-2">
+          Категории * <span className="text-xs text-[#8B8279] dark:text-[#707070] font-normal">(можно выбрать несколько)</span>
         </label>
         <div className="flex flex-wrap gap-2">
           {categories.map(cat => {
@@ -205,7 +205,7 @@ function FormContent(props: FormContentProps) {
                 className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${
                   isSelected
                     ? 'bg-gradient-to-r from-[#C9A882] to-[#B08968] text-white shadow-md'
-                    : 'bg-[#F5E6D3]/50 text-[#5D4E3A] hover:bg-[#F5E6D3] border border-[#E8D4BA]/50'
+                    : 'bg-[#F5E6D3]/50 dark:bg-[#2A2A2A] text-[#5D4E3A] dark:text-[#E5E5E5] hover:bg-[#F5E6D3] dark:hover:bg-[#3D3D3D] border border-[#E8D4BA]/50 dark:border-[#3D3D3D]'
                 }`}
               >
                 {cat.icon} {cat.name}
@@ -220,15 +220,15 @@ function FormContent(props: FormContentProps) {
 
       {/* Ссылка */}
       <div className={`p-4 rounded-xl border ${
-        formErrors.external_url ? 'bg-red-50 border-red-200' : 'bg-gradient-to-r from-blue-50 to-purple-50 border-blue-100'
+        formErrors.external_url ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800' : 'bg-gradient-to-r from-blue-50 to-purple-50 dark:from-[#2A2A2A] dark:to-[#2A2A2A] border-blue-100 dark:border-[#3D3D3D]'
       }`}>
-        <label className="block text-sm font-medium text-[#5D4E3A] mb-1.5">🔗 Ссылка на материал *</label>
+        <label className="block text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5] mb-1.5">🔗 Ссылка на материал *</label>
         <input
           type="url"
           value={formData.external_url}
           onChange={e => onUpdateFormData({ external_url: e.target.value })}
-          className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-[#B08968]/30 focus:border-[#B08968] outline-none bg-white ${
-            formErrors.external_url ? 'border-red-400' : 'border-[#E8D4BA]/50'
+          className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-[#B08968]/30 focus:border-[#B08968] outline-none bg-white dark:bg-[#2A2A2A] dark:text-[#E5E5E5] ${
+            formErrors.external_url ? 'border-red-400' : 'border-[#E8D4BA]/50 dark:border-[#3D3D3D]'
           }`}
           placeholder="https://notion.so/... или https://t.me/..."
         />
@@ -248,15 +248,15 @@ function FormContent(props: FormContentProps) {
       <button
         type="button"
         onClick={() => setShowAdvanced(!showAdvanced)}
-        className="flex items-center gap-2 text-sm text-[#8B8279] hover:text-[#5D4E3A] transition-colors"
+        className="flex items-center gap-2 text-sm text-[#8B8279] dark:text-[#B0B0B0] hover:text-[#5D4E3A] dark:hover:text-[#E5E5E5] transition-colors"
       >
         <span className={`transform transition-transform ${showAdvanced ? 'rotate-90' : ''}`}>▶</span>
         Расширенные настройки (редактор контента)
       </button>
 
       {showAdvanced && (
-        <div className="p-4 bg-[#F5E6D3]/30 rounded-xl space-y-4">
-          <p className="text-xs text-[#8B8279]">Используйте редактор только если материал не является внешней ссылкой</p>
+        <div className="p-4 bg-[#F5E6D3]/30 dark:bg-[#2A2A2A] rounded-xl space-y-4">
+          <p className="text-xs text-[#8B8279] dark:text-[#707070]">Используйте редактор только если материал не является внешней ссылкой</p>
           <RichTextEditor
             content={formData.content}
             onChange={(html) => onSetFormData({...formData, content: html})}
@@ -280,7 +280,7 @@ function FormContent(props: FormContentProps) {
 
       {/* Переключатели */}
       <div className="flex flex-wrap gap-4">
-        <label className="flex items-center gap-2 cursor-pointer p-3 bg-[#F5E6D3]/30 rounded-xl hover:bg-[#F5E6D3]/50 transition-colors">
+        <label className="flex items-center gap-2 cursor-pointer p-3 bg-[#F5E6D3]/30 dark:bg-[#2A2A2A] rounded-xl hover:bg-[#F5E6D3]/50 dark:hover:bg-[#3D3D3D] transition-colors">
           <input
             type="checkbox"
             checked={formData.is_published}
@@ -288,11 +288,11 @@ function FormContent(props: FormContentProps) {
             className="w-5 h-5 rounded border-[#E8D4BA] text-[#B08968] focus:ring-[#B08968]/30"
           />
           <div>
-            <span className="text-sm font-medium text-[#5D4E3A]">Опубликовать сразу</span>
-            <p className="text-xs text-[#8B8279]">Материал будет виден пользователям</p>
+            <span className="text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5]">Опубликовать сразу</span>
+            <p className="text-xs text-[#8B8279] dark:text-[#707070]">Материал будет виден пользователям</p>
           </div>
         </label>
-        <label className="flex items-center gap-2 cursor-pointer p-3 bg-amber-50 rounded-xl hover:bg-amber-100 transition-colors">
+        <label className="flex items-center gap-2 cursor-pointer p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors">
           <input
             type="checkbox"
             checked={formData.is_featured}
@@ -300,8 +300,8 @@ function FormContent(props: FormContentProps) {
             className="w-5 h-5 rounded border-amber-300 text-amber-500 focus:ring-amber-300/30"
           />
           <div>
-            <span className="text-sm font-medium text-[#5D4E3A] flex items-center gap-1"><Star className="w-4 h-4 text-amber-400" /> Выбор Полины</span>
-            <p className="text-xs text-[#8B8279]">Покажется на главной</p>
+            <span className="text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5] flex items-center gap-1"><Star className="w-4 h-4 text-amber-400" /> Выбор Полины</span>
+            <p className="text-xs text-[#8B8279] dark:text-[#707070]">Покажется на главной</p>
           </div>
         </label>
       </div>
@@ -333,11 +333,11 @@ function DesktopPreview({ formData, categories, formErrors }: {
   formErrors: Record<string, string>
 }) {
   return (
-    <div className="w-80 bg-gradient-to-b from-[#F9F6F2] to-[#F5E6D3]/30 border-l border-[#E8D4BA]/30 p-6 hidden lg:block">
+    <div className="w-80 bg-gradient-to-b from-[#F9F6F2] to-[#F5E6D3]/30 dark:from-[#1E1E1E] dark:to-[#1E1E1E] border-l border-[#E8D4BA]/30 dark:border-[#3D3D3D] p-6 hidden lg:block">
       <div className="sticky top-6">
-        <h3 className="text-sm font-medium text-[#5D4E3A] mb-4 flex items-center gap-2"><Eye className="w-4 h-4 text-[#B08968]" /> Предпросмотр</h3>
+        <h3 className="text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5] mb-4 flex items-center gap-2"><Eye className="w-4 h-4 text-[#B08968]" /> Предпросмотр</h3>
         
-        <div className="bg-white rounded-2xl overflow-hidden shadow-lg border border-[#E8D4BA]/30">
+        <div className="bg-white dark:bg-[#2A2A2A] rounded-2xl overflow-hidden shadow-lg border border-[#E8D4BA]/30 dark:border-[#3D3D3D]">
           <div className="aspect-video bg-gradient-to-br from-[#F5E6D3] to-[#E8D4BA] relative overflow-hidden">
             {formData.cover_image ? (
               <img src={formData.cover_image} alt="Превью" className="w-full h-full object-cover"/>
@@ -354,10 +354,10 @@ function DesktopPreview({ formData, categories, formErrors }: {
           </div>
           
           <div className="p-4">
-            <h4 className="font-semibold text-[#5D4E3A] mb-1 line-clamp-2">
+            <h4 className="font-semibold text-[#5D4E3A] dark:text-[#E5E5E5] mb-1 line-clamp-2">
               {formData.title || 'Название материала'}
             </h4>
-            <p className="text-sm text-[#8B8279] mb-3 line-clamp-2">
+            <p className="text-sm text-[#8B8279] dark:text-[#707070] mb-3 line-clamp-2">
               {formData.description || 'Описание материала будет здесь...'}
             </p>
             {formData.external_url && (
@@ -369,8 +369,8 @@ function DesktopPreview({ formData, categories, formErrors }: {
           </div>
         </div>
       
-        <div className="mt-4 p-3 bg-white/50 rounded-xl">
-          <div className="text-xs text-[#8B8279] space-y-1">
+        <div className="mt-4 p-3 bg-white/50 dark:bg-[#2A2A2A] rounded-xl">
+          <div className="text-xs text-[#8B8279] dark:text-[#707070] space-y-1">
             <p>
               <span className={formData.is_published ? 'text-green-600' : 'text-orange-500'}>●</span>
               {' '}{formData.is_published ? 'Будет опубликован' : 'Черновик'}
@@ -451,17 +451,17 @@ export function MaterialFormModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center pt-12 sm:pt-0 sm:p-4">
-      <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col sm:flex-row">
+      <div className="bg-white dark:bg-[#1E1E1E] rounded-t-3xl sm:rounded-3xl w-full sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col sm:flex-row">
         {/* Левая часть - Форма */}
         <div className="flex-1 overflow-y-auto">
           {/* Индикатор для мобильных */}
           <div className="sm:hidden flex justify-center pt-2 pb-1">
-            <div className="w-10 h-1 bg-[#E8D4BA] rounded-full"></div>
+            <div className="w-10 h-1 bg-[#E8D4BA] dark:bg-[#3D3D3D] rounded-full"></div>
           </div>
           
-          <div className="sticky top-0 bg-white border-b border-[#E8D4BA]/30 px-4 sm:px-6 py-3 sm:py-4 flex justify-between items-center z-10">
+          <div className="sticky top-0 bg-white dark:bg-[#1E1E1E] border-b border-[#E8D4BA]/30 dark:border-[#3D3D3D] px-4 sm:px-6 py-3 sm:py-4 flex justify-between items-center z-10">
             <div>
-              <h2 className="text-lg sm:text-xl font-bold text-[#5D4E3A]">
+              <h2 className="text-lg sm:text-xl font-bold text-[#5D4E3A] dark:text-[#E5E5E5]">
                 {editingMaterial ? 'Редактировать' : 'Новый материал'}
               </h2>
               {hasUnsavedChanges && (
@@ -471,7 +471,7 @@ export function MaterialFormModal({
             <button
               type="button"
               onClick={onClose}
-              className="w-8 h-8 rounded-full hover:bg-[#F5E6D3] flex items-center justify-center text-[#8B8279]"
+              className="w-8 h-8 rounded-full hover:bg-[#F5E6D3] dark:hover:bg-[#2A2A2A] flex items-center justify-center text-[#8B8279] dark:text-[#B0B0B0]"
             >
               ✕
             </button>

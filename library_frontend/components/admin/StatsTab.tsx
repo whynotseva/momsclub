@@ -324,13 +324,17 @@ export function StatsTab({
                 <button
                   onClick={() => sendPush(!pushForm.targetUser)}
                   disabled={pushSending || !pushForm.title || !pushForm.body}
-                  className="flex-1 py-2 bg-gradient-to-r from-[#C9A882] to-[#B08968] text-white rounded-xl font-medium disabled:opacity-50"
+                  className={`flex-1 py-2 rounded-xl font-medium transition-all ${
+                    pushSending || !pushForm.title || !pushForm.body
+                      ? 'bg-[#E8D4BA]/50 dark:bg-[#2A2A2A] text-[#8B8279] dark:text-[#707070] cursor-not-allowed'
+                      : 'bg-gradient-to-r from-[#C9A882] to-[#B08968] text-white hover:shadow-lg'
+                  }`}
                 >
                   {pushSending ? '⏳' : pushForm.targetUser ? `Отправить ${pushForm.targetUser}` : 'Отправить всем'}
                 </button>
                 <button
                   onClick={() => { setShowPushForm(false); setPushForm({...pushForm, title: '', body: '', targetUser: ''}); }}
-                  className="px-4 py-2 border border-[#E8D4BA] text-[#8B8279] rounded-xl"
+                  className="px-4 py-2 border border-[#E8D4BA] dark:border-[#3D3D3D] text-[#8B8279] dark:text-[#707070] rounded-xl hover:bg-[#F5E6D3]/50 dark:hover:bg-[#2A2A2A] transition-all"
                 >
                   ✕
                 </button>

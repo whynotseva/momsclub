@@ -6,7 +6,7 @@ import { usePresence, Activity as WsActivity, AdminAction as WsAdminAction } fro
 import { useAdminData } from '@/hooks/useAdminData'
 import { useTheme } from '@/contexts/ThemeContext'
 import { ADMIN_IDS, ADMIN_GROUP_INFO } from '@/lib/constants'
-import { Sun, Moon, BarChart3, BookOpen, FolderOpen, Clock, Users, Bot } from 'lucide-react'
+import { Sun, Moon, BarChart3, BookOpen, FolderOpen, Clock, Users, Bot, Crown, Code, Target } from 'lucide-react'
 import { Category, Material, Activity, AdminAction, AdminUser } from '@/lib/types'
 import { CategoriesTab, HistoryTab, UsersTab, MaterialsTab, MaterialFormModal, CategoryFormModal, StatsTab, UserDetailsModal, BotUserCard, BotUsersSearch, BotStatsTab } from '@/components/admin'
 
@@ -584,11 +584,13 @@ export default function AdminPage() {
               <div>
                 <p className="text-xs text-[#B08968] font-medium uppercase tracking-wide mb-0.5">Панель администратора</p>
                 <h2 className="text-xl font-bold text-[#5D4E3A] dark:text-[#E5E5E5]">
-                  Привет, {adminUser.first_name || 'Админ'}! 👋
+                  Привет, {adminUser.first_name || 'Админ'}!
                 </h2>
                 {adminUser.admin_group && ADMIN_GROUP_INFO[adminUser.admin_group] && (
-                  <p className="text-sm text-[#8B8279] flex items-center gap-1.5 mt-0.5">
-                    <span>{ADMIN_GROUP_INFO[adminUser.admin_group].emoji}</span>
+                  <p className="text-sm text-[#8B8279] dark:text-[#B0B0B0] flex items-center gap-1.5 mt-0.5">
+                    {adminUser.admin_group === 'creator' && <Crown className="w-4 h-4 text-amber-500" />}
+                    {adminUser.admin_group === 'developer' && <Code className="w-4 h-4 text-blue-500" />}
+                    {adminUser.admin_group === 'curator' && <Target className="w-4 h-4 text-green-500" />}
                     <span>{ADMIN_GROUP_INFO[adminUser.admin_group].name}</span>
                   </p>
                 )}

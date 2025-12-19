@@ -9,10 +9,10 @@
 export const ADMIN_IDS: number[] = [534740911, 44054166, 5027032264]
 
 /** Информация о группах админов */
-export const ADMIN_GROUP_INFO: Record<string, { emoji: string; name: string }> = {
-  creator: { emoji: '👑', name: "Основательница Mom's Club" },
-  developer: { emoji: '💻', name: "Разработчик Mom's Club" },
-  curator: { emoji: '🎯', name: "Куратор Mom's Club" },
+export const ADMIN_GROUP_INFO: Record<string, { emoji: string; name: string; icon: string }> = {
+  creator: { emoji: '', name: "Основательница Mom's Club", icon: 'crown' },
+  developer: { emoji: '', name: "Разработчик Mom's Club", icon: 'code' },
+  curator: { emoji: '', name: "Куратор Mom's Club", icon: 'target' },
 }
 
 // ==================== ЛОЯЛЬНОСТЬ ====================

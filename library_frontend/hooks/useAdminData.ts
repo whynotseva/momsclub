@@ -52,6 +52,24 @@ interface SelectedUser {
   has_push: boolean
 }
 
+interface BotUser {
+  id: number
+  telegram_id: number
+  username?: string
+  first_name?: string
+  last_name?: string
+  created_at: string
+  subscription?: { end_date: string; days_left: number; price: number }
+  has_active_subscription: boolean
+  is_recurring_active: boolean
+  autopay_streak: number
+  loyalty: { level: string; days_in_club: number }
+  referral: { referral_balance: number; referrals_count: number; total_earned_referral: number }
+  badges: { badge_type: string }[]
+  total_payments_count: number
+  total_paid_amount: number
+}
+
 /**
  * Хук для загрузки данных админки
  */
@@ -70,6 +88,7 @@ export function useAdminData() {
   const [usersStats, setUsersStats] = useState<UsersStats | null>(null)
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [selectedUser, setSelectedUser] = useState<SelectedUser | null>(null)
+  const [selectedBotUser, setSelectedBotUser] = useState<BotUser | null>(null)
   
   // Утилиты
   const [copiedUsername, setCopiedUsername] = useState<string | null>(null)
@@ -183,6 +202,19 @@ export function useAdminData() {
     setSelectedUser(null)
   }, [])
 
+  const loadBotUserDetails = useCallback(async (telegramId: number) => {
+    try {
+      const response = await api.get(`/admin/users/${telegramId}`)
+      setSelectedBotUser(response.data)
+    } catch (error) {
+      console.error('Failed to load bot user:', error)
+    }
+  }, [])
+
+  const closeBotUserDetails = useCallback(() => {
+    setSelectedBotUser(null)
+  }, [])
+
   const addActivity = useCallback((activity: Activity) => {
     setRecentActivity(prev => [activity, ...prev].slice(0, 20))
   }, [])
@@ -199,14 +231,15 @@ export function useAdminData() {
     // Данные
     stats, materials, loadingMaterials, categories,
     recentActivity, adminHistory, loadingHistory,
-    pushSubscribers, usersStats, analytics, selectedUser, copiedUsername,
+    pushSubscribers, usersStats, analytics, selectedUser, selectedBotUser, copiedUsername,
     
     // Функции загрузки
     loadStats, loadMaterials, loadCategories, loadRecentActivity,
     loadPushSubscribers, loadUsersStats, loadAnalytics, loadUserDetails, loadAdminHistory,
+    loadBotUserDetails,
     
     // Утилиты
-    copyUsername, closeUserDetails, addActivity, addAdminAction, updateCategories,
+    copyUsername, closeUserDetails, closeBotUserDetails, addActivity, addAdminAction, updateCategories,
     
     // API
     api,

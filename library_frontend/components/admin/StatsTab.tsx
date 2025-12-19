@@ -272,23 +272,23 @@ export function StatsTab({
                 placeholder="Заголовок"
                 value={pushForm.title}
                 onChange={(e) => setPushForm({...pushForm, title: e.target.value})}
-                className="w-full px-4 py-2 border border-[#E8D4BA]/50 rounded-xl focus:ring-2 focus:ring-[#B08968]/30 outline-none"
+                className="w-full px-4 py-2 border border-[#E8D4BA]/50 dark:border-[#3D3D3D] dark:bg-[#2A2A2A] dark:text-[#E5E5E5] rounded-xl focus:ring-2 focus:ring-[#B08968]/30 outline-none"
               />
               <textarea
                 placeholder="Текст сообщения"
                 value={pushForm.body}
                 onChange={(e) => setPushForm({...pushForm, body: e.target.value})}
-                className="w-full px-4 py-2 border border-[#E8D4BA]/50 rounded-xl focus:ring-2 focus:ring-[#B08968]/30 outline-none resize-none"
+                className="w-full px-4 py-2 border border-[#E8D4BA]/50 dark:border-[#3D3D3D] dark:bg-[#2A2A2A] dark:text-[#E5E5E5] rounded-xl focus:ring-2 focus:ring-[#B08968]/30 outline-none resize-none"
                 rows={2}
               />
               {/* Выбор получателя */}
               <div className="space-y-2">
-                <p className="text-xs text-[#8B8279]">Кому отправить:</p>
+                <p className="text-xs text-[#8B8279] dark:text-[#707070]">Кому отправить:</p>
                 <div className="flex flex-wrap gap-2">
                   <button
                     onClick={() => setPushForm({...pushForm, targetUser: ''})}
                     className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                      !pushForm.targetUser ? 'bg-[#B08968] text-white' : 'bg-[#F5E6D3]/50 text-[#8B8279] hover:bg-[#F5E6D3]'
+                      !pushForm.targetUser ? 'bg-[#B08968] text-white' : 'bg-[#F5E6D3]/50 dark:bg-[#2A2A2A] text-[#8B8279] dark:text-[#B0B0B0] hover:bg-[#F5E6D3] dark:hover:bg-[#3D3D3D]'
                     }`}
                   >
                     <Users className="w-4 h-4" /> Всем ({usersStats?.with_push || 0})
@@ -302,16 +302,16 @@ export function StatsTab({
                       className={`w-full flex items-center gap-2 p-2 rounded-xl text-left transition-all ${
                         pushForm.targetUser === (u.username || String(u.telegram_id)) 
                           ? 'bg-[#B08968] text-white' 
-                          : 'bg-[#F5E6D3]/30 hover:bg-[#F5E6D3]/50'
+                          : 'bg-[#F5E6D3]/30 dark:bg-[#2A2A2A] hover:bg-[#F5E6D3]/50 dark:hover:bg-[#3D3D3D]'
                       }`}
                     >
                       <Avatar src={u.photo_url} name={u.first_name || '?'} size="sm" />
                       <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-medium truncate ${pushForm.targetUser === (u.username || String(u.telegram_id)) ? 'text-white' : 'text-[#5D4E3A]'}`}>
+                        <p className={`text-sm font-medium truncate ${pushForm.targetUser === (u.username || String(u.telegram_id)) ? 'text-white' : 'text-[#5D4E3A] dark:text-[#E5E5E5]'}`}>
                           {u.first_name || 'Без имени'}
                         </p>
                         {u.username && (
-                          <p className={`text-xs truncate ${pushForm.targetUser === (u.username || String(u.telegram_id)) ? 'text-white/80' : 'text-[#8B8279]'}`}>
+                          <p className={`text-xs truncate ${pushForm.targetUser === (u.username || String(u.telegram_id)) ? 'text-white/80' : 'text-[#8B8279] dark:text-[#707070]'}`}>
                             @{u.username}
                           </p>
                         )}

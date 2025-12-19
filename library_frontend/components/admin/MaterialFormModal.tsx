@@ -165,7 +165,7 @@ function FormContent(props: FormContentProps) {
           value={formData.title}
           onChange={e => onUpdateFormData({ title: e.target.value })}
           className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-[#B08968]/30 focus:border-[#B08968] outline-none ${
-            formErrors.title ? 'border-red-400 bg-red-50' : 'border-[#E8D4BA]/50'
+            formErrors.title ? 'border-red-400 bg-red-50 dark:bg-red-900/20' : 'border-[#E8D4BA]/50 dark:border-[#3D3D3D] dark:bg-[#2A2A2A] dark:text-[#E5E5E5]'
           }`}
           placeholder="Введите название материала"
         />

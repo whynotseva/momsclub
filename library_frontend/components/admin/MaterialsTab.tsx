@@ -76,7 +76,7 @@ export function MaterialsTab({
     <div>
       {/* Action bar */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 sm:mb-6 gap-3">
-        <h2 className="text-base sm:text-lg font-semibold text-[#5D4E3A]">
+        <h2 className="text-base sm:text-lg font-semibold text-[#5D4E3A] dark:text-[#E5E5E5]">
           Все материалы ({materials.length})
         </h2>
         <div className="flex gap-2 w-full sm:w-auto">
@@ -90,7 +90,7 @@ export function MaterialsTab({
                 setMaterialsLimit(10)
               }}
               placeholder="🔍 Поиск..."
-              className="w-full sm:w-48 px-3 py-2 border border-[#E8D4BA]/50 rounded-lg text-sm focus:ring-2 focus:ring-[#B08968]/30 focus:border-[#B08968] outline-none"
+              className="w-full sm:w-48 px-3 py-2 border border-[#E8D4BA]/50 dark:border-[#3D3D3D] dark:bg-[#2A2A2A] dark:text-[#E5E5E5] rounded-lg text-sm focus:ring-2 focus:ring-[#B08968]/30 focus:border-[#B08968] outline-none"
             />
             {materialsSearch && (
               <button
@@ -112,10 +112,10 @@ export function MaterialsTab({
 
       {/* Materials list */}
       {loadingMaterials ? (
-        <div className="bg-white/80 backdrop-blur-xl rounded-2xl p-8 border border-[#E8D4BA]/30">
+        <div className="bg-white/80 dark:bg-[#1E1E1E]/80 backdrop-blur-xl rounded-2xl p-8 border border-[#E8D4BA]/30 dark:border-[#3D3D3D]">
           <div className="animate-pulse space-y-4">
             {[1, 2, 3, 4].map(i => (
-              <div key={i} className="flex items-center gap-4 p-4 bg-[#F5E6D3]/30 rounded-xl">
+              <div key={i} className="flex items-center gap-4 p-4 bg-[#F5E6D3]/30 dark:bg-[#2A2A2A] rounded-xl">
                 <div className="h-4 bg-[#E8D4BA]/50 rounded w-1/3"></div>
                 <div className="h-4 bg-[#E8D4BA]/30 rounded w-1/6"></div>
                 <div className="h-4 bg-[#E8D4BA]/30 rounded w-1/6"></div>
@@ -124,14 +124,14 @@ export function MaterialsTab({
           </div>
         </div>
       ) : filteredMaterials.length === 0 ? (
-        <div className="bg-white/80 backdrop-blur-xl rounded-2xl p-12 border border-[#E8D4BA]/30 text-center">
-          <div className="w-16 h-16 bg-[#F5E6D3] rounded-2xl flex items-center justify-center mx-auto mb-4">
+        <div className="bg-white/80 dark:bg-[#1E1E1E]/80 backdrop-blur-xl rounded-2xl p-12 border border-[#E8D4BA]/30 dark:border-[#3D3D3D] text-center">
+          <div className="w-16 h-16 bg-[#F5E6D3] dark:bg-[#2A2A2A] rounded-2xl flex items-center justify-center mx-auto mb-4">
             {materialsSearch ? <Search className="w-8 h-8 text-[#B08968]" /> : <BookOpen className="w-8 h-8 text-[#B08968]" />}
           </div>
-          <h3 className="text-lg font-medium text-[#5D4E3A] mb-2">
+          <h3 className="text-lg font-medium text-[#5D4E3A] dark:text-[#E5E5E5] mb-2">
             {materialsSearch ? 'Ничего не найдено' : 'Пока нет материалов'}
           </h3>
-          <p className="text-[#8B8279] mb-4">
+          <p className="text-[#8B8279] dark:text-[#707070] mb-4">
             {materialsSearch ? `По запросу "${materialsSearch}" ничего не найдено` : 'Добавьте первый материал в библиотеку'}
           </p>
           {!materialsSearch && (
@@ -147,7 +147,7 @@ export function MaterialsTab({
         <>
           {/* Инфо о фильтрации */}
           {materialsSearch && (
-            <p className="text-sm text-[#8B8279] mb-3">
+            <p className="text-sm text-[#8B8279] dark:text-[#707070] mb-3">
               Найдено: {filteredMaterials.length} из {materials.length}
             </p>
           )}
@@ -155,16 +155,16 @@ export function MaterialsTab({
           {/* Мобильная версия — карточки */}
           <div className="md:hidden space-y-3">
             {displayedMaterials.map(material => (
-              <div key={material.id} className="bg-white/80 backdrop-blur-xl rounded-2xl border border-[#E8D4BA]/30 p-4">
+              <div key={material.id} className="bg-white/80 dark:bg-[#1E1E1E]/80 backdrop-blur-xl rounded-2xl border border-[#E8D4BA]/30 dark:border-[#3D3D3D] p-4">
                 <div className="flex items-start justify-between gap-3 mb-3">
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-medium text-[#5D4E3A] truncate">{material.title}</h3>
-                    <p className="text-xs text-[#8B8279]">{getCategoryNames(material)}</p>
+                    <h3 className="font-medium text-[#5D4E3A] dark:text-[#E5E5E5] truncate">{material.title}</h3>
+                    <p className="text-xs text-[#8B8279] dark:text-[#707070]">{getCategoryNames(material)}</p>
                   </div>
                   <span className={`px-2 py-1 rounded-full text-xs font-medium flex-shrink-0 ${
                     material.is_published 
-                      ? 'bg-green-100 text-green-700' 
-                      : 'bg-orange-100 text-orange-700'
+                      ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400' 
+                      : 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400'
                   }`}>
                     {material.is_published ? '✓' : '○'}
                   </span>
@@ -176,21 +176,21 @@ export function MaterialsTab({
                       onClick={() => onTogglePublish(material)}
                       className={`px-3 py-1.5 text-xs rounded-lg ${
                         material.is_published 
-                          ? 'text-orange-600 bg-orange-50' 
-                          : 'text-green-600 bg-green-50'
+                          ? 'text-orange-600 bg-orange-50 dark:bg-orange-900/30 dark:text-orange-400' 
+                          : 'text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400'
                       }`}
                     >
                       {material.is_published ? 'Снять' : 'Опубл.'}
                     </button>
                     <button
                       onClick={() => onEdit(material)}
-                      className="px-3 py-1.5 text-xs text-[#B08968] bg-[#F5E6D3]/50 rounded-lg"
+                      className="px-3 py-1.5 text-xs text-[#B08968] bg-[#F5E6D3]/50 dark:bg-[#2A2A2A] rounded-lg"
                     >
                       ✏️
                     </button>
                     <button
                       onClick={() => onDelete(material.id)}
-                      className="px-3 py-1.5 text-xs text-red-500 bg-red-50 rounded-lg"
+                      className="px-3 py-1.5 text-xs text-red-500 bg-red-50 dark:bg-red-900/30 dark:text-red-400 rounded-lg"
                     >
                       🗑️
                     </button>
@@ -201,34 +201,34 @@ export function MaterialsTab({
           </div>
 
           {/* Десктоп версия — таблица */}
-          <div className="hidden md:block bg-white/80 backdrop-blur-xl rounded-2xl border border-[#E8D4BA]/30 overflow-hidden">
+          <div className="hidden md:block bg-white/80 dark:bg-[#1E1E1E]/80 backdrop-blur-xl rounded-2xl border border-[#E8D4BA]/30 dark:border-[#3D3D3D] overflow-hidden">
             <table className="w-full">
-              <thead className="bg-[#F5E6D3]/50">
+              <thead className="bg-[#F5E6D3]/50 dark:bg-[#2A2A2A]">
                 <tr>
-                  <th className="text-left px-4 py-3 text-sm font-medium text-[#5D4E3A]">Название</th>
-                  <th className="text-left px-4 py-3 text-sm font-medium text-[#5D4E3A]">Категория</th>
-                  <th className="text-left px-4 py-3 text-sm font-medium text-[#5D4E3A]">Статус</th>
-                  <th className="text-left px-4 py-3 text-sm font-medium text-[#5D4E3A]">Просмотры</th>
-                  <th className="text-right px-4 py-3 text-sm font-medium text-[#5D4E3A]">Действия</th>
+                  <th className="text-left px-4 py-3 text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5]">Название</th>
+                  <th className="text-left px-4 py-3 text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5]">Категория</th>
+                  <th className="text-left px-4 py-3 text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5]">Статус</th>
+                  <th className="text-left px-4 py-3 text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5]">Просмотры</th>
+                  <th className="text-right px-4 py-3 text-sm font-medium text-[#5D4E3A] dark:text-[#E5E5E5]">Действия</th>
                 </tr>
               </thead>
               <tbody>
                 {displayedMaterials.map(material => (
-                  <tr key={material.id} className="border-t border-[#E8D4BA]/20 hover:bg-white/50">
+                  <tr key={material.id} className="border-t border-[#E8D4BA]/20 dark:border-[#3D3D3D] hover:bg-white/50 dark:hover:bg-[#2A2A2A]">
                     <td className="px-4 py-3">
-                      <div className="font-medium text-[#5D4E3A]">{material.title}</div>
+                      <div className="font-medium text-[#5D4E3A] dark:text-[#E5E5E5]">{material.title}</div>
                     </td>
-                    <td className="px-4 py-3 text-sm text-[#8B8279]">{getCategoryNames(material)}</td>
+                    <td className="px-4 py-3 text-sm text-[#8B8279] dark:text-[#707070]">{getCategoryNames(material)}</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                         material.is_published 
-                          ? 'bg-green-100 text-green-700' 
-                          : 'bg-orange-100 text-orange-700'
+                          ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400' 
+                          : 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400'
                       }`}>
                         {material.is_published ? 'Опубликован' : 'Черновик'}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-[#8B8279]">{material.views}</td>
+                    <td className="px-4 py-3 text-sm text-[#8B8279] dark:text-[#707070]">{material.views}</td>
                     <td className="px-4 py-3 text-right space-x-1">
                       <button
                         onClick={() => onTogglePublish(material)}
